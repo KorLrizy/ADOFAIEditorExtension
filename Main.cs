@@ -138,6 +138,58 @@ namespace ADOFAIEditorExtension
                     Logger?.Log("补丁 " + type.FullName + " 应用失败: " + e.Message);
                 }
             }
+
+            LogCoexistingMods();
+        }
+
+        /// <summary>
+        /// 启动共存日志（§43 加固项 3）：把其它启用中的 mod 逐条打出来，并对已知会互相影响的几个给一句提示。
+        /// 纯日志，不做任何行为上的适配 —— 与 Iridium 的共存结论是“无硬性冲突”，不需要检测/让步逻辑。
+        /// 整段包 try/catch：这是排查用的保险，绝不能因为 UMM 的 API 变化打断启动。
+        /// </summary>
+        private static void LogCoexistingMods()
+        {
+            try
+            {
+                List<UnityModManager.ModEntry> entries = UnityModManager.modEntries;
+                if (entries == null)
+                    return;
+                string ownId = ModEntry?.Info?.Id;
+                foreach (UnityModManager.ModEntry entry in entries)
+                {
+                    if (entry == null || !entry.Enabled || entry.Info == null)
+                        continue;
+                    if (string.Equals(entry.Info.Id, ownId, StringComparison.Ordinal))
+                        continue;
+
+                    string line = "共存 mod: " + entry.Info.Id + " " + entry.Info.Version;
+                    string hint = CoexistenceHint(entry.Info.Id);
+                    if (!string.IsNullOrEmpty(hint))
+                        line += " —— " + hint;
+                    Logger?.Log(line);
+                }
+            }
+            catch (Exception e)
+            {
+                Logger?.Log("扫描已启用 mod 失败: " + e.Message);
+            }
+        }
+
+        /// <summary>已知 mod 的共存提示；不认识的返回 null。</summary>
+        private static string CoexistenceHint(string id)
+        {
+            switch (id)
+            {
+                case "Iridium":
+                    return "已评估可共存，注意其编辑器「砖块优化」相关选项保持默认。";
+                case "EnhancedEffectRemover":
+                    return "其去特效功能会删装饰/事件，请检查该功能的开关是否符合预期。";
+                case "PACL2":
+                case "QuickChart":
+                    return "其 v3 线构建在 v2.9.8 上，与本模组有兼容风险。";
+                default:
+                    return null;
+            }
         }
 
         private static void StopMod(UnityModManager.ModEntry modEntry)
