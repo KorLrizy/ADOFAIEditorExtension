@@ -172,8 +172,9 @@ namespace ADOFAIEditorExtension
         }
 
         /// <summary>
-        /// 用游戏自带的黑屏过场重启编辑器：设置 levelToOpenOnLoad 后用 scrLoader.LoadSceneWithTransition
-        /// 切到 scnEditor（与游戏 QuitToMenu 的过场同一套 API）。失败则回退到无过场的 RestartScene。
+        /// 重启编辑器并重载当前关卡：先记 <c>scnEditor.levelToOpenOnLoad</c>，再 <c>ADOBase.RestartScene()</c>。
+        /// （r148 这里走的是 <c>ADOBase.loader</c> + <c>LoadSceneWithTransition</c> 的黑屏过场；
+        ///  r265 删了 <c>ADOBase.loader</c> 与 <c>scrLoader.LoadSceneWithTransition</c>，见 §41 A-4。）
         /// </summary>
         private static void RestartEditorWithWipe()
         {
@@ -184,20 +185,11 @@ namespace ADOFAIEditorExtension
                     scnEditor.levelToOpenOnLoad = levelPath;
 
                 DOTween.KillAll(false);
-
-                scrLoader loader = ADOBase.loader;
-                if (loader == null)
-                {
-                    ADOBase.RestartScene();
-                    return;
-                }
-
-                loader.LoadSceneWithTransition(WipeDirection.StartsFromRight, "scnEditor");
+                ADOBase.RestartScene();
             }
             catch (Exception e)
             {
-                Logger?.Log("过场重启失败，回退 RestartScene: " + e);
-                ADOBase.RestartScene();
+                Logger?.Log("重启编辑器失败: " + e);
             }
         }
 

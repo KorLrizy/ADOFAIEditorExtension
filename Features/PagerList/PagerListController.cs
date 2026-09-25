@@ -1078,7 +1078,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             text.fontSize = label.fontSize;
             text.color = highlighted ? NoteColorSelected : NoteColor;
             text.alignment = TextAlignmentOptions.Right;
-            text.textWrappingMode = TextWrappingModes.NoWrap;
+            text.enableWordWrapping = false;
             text.overflowMode = TextOverflowModes.Ellipsis;
             text.raycastTarget = false;
             // 备注是用户输入：关掉富文本，免得里面出现 <...> 时被 TMP 当标签解析
@@ -1201,7 +1201,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             }
             noteTooltipText.color = Color.white;
             noteTooltipText.alignment = TextAlignmentOptions.TopLeft;
-            noteTooltipText.textWrappingMode = TextWrappingModes.Normal;   // 长备注在这里换行
+            noteTooltipText.enableWordWrapping = true;   // 长备注在这里换行
             noteTooltipText.overflowMode = TextOverflowModes.Overflow;
             noteTooltipText.raycastTarget = false;
             noteTooltipText.richText = false;                              // 用户输入按字面显示
@@ -1897,7 +1897,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     target.SetProperties(fake, true);
                 MarkMixedLabels(target, fake);
                 MakeMixedRowsEditable(target, fake);
-                LogMultiEdit("绑定面板：" + fake.realEvents.Count + " 个事件，data " + fake.GetData().Count
+                LogMultiEdit("绑定面板：" + fake.realEvents.Count + " 个事件，data " + fake.data.Count
                     + " 键，混合值 " + mixedKeys.Count + " 个");
             }
             catch (Exception e)
@@ -1942,7 +1942,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 else
                 {
                     // 极端情况（没注册表）：退回"照搬第一个事件的 data"，至少还能用
-                    foreach (KeyValuePair<string, object> pair in first.GetData())
+                    foreach (KeyValuePair<string, object> pair in first.data)
                         data[pair.Key] = pair.Value;
                 }
 
@@ -2271,8 +2271,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 bool hasValue = false;
                 try { hasValue = fake.TryGet<object>(key, out value); }
                 catch { }
-                if (!hasValue && !fake.GetData().ContainsKey(key))
-                    hasValue = fake.GetData().TryGetValue(key, out value);      // TryGet 的类型转换失败时兜一手
+                if (!hasValue && !fake.data.ContainsKey(key))
+                    hasValue = fake.data.TryGetValue(key, out value);      // TryGet 的类型转换失败时兜一手
                 if (!hasValue)
                 {
                     // fake 上没有这个键（理论上不该发生）：直接退出，别把 null 写进所有事件
@@ -3312,7 +3312,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 text.fontSharedMaterial = source.fontSharedMaterial;
                 text.fontSize = source.fontSize;
                 text.color = source.color;
-                text.textWrappingMode = TextWrappingModes.NoWrap;
+                text.enableWordWrapping = false;
                 text.overflowMode = TextOverflowModes.Ellipsis;
             }
             // 垂直方向强制居中：原版对齐可能是 Top*，会贴着顶边画，同样会盖住上边线

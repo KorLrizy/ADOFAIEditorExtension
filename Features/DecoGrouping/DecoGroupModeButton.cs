@@ -166,7 +166,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             text.fontSizeMin = 9f;
             text.fontSizeMax = 20f;
             text.alignment = TextAlignmentOptions.Center;
-            text.textWrappingMode = TextWrappingModes.NoWrap;
+            text.enableWordWrapping = false;
             text.overflowMode = TextOverflowModes.Overflow;   // 不裁切
             text.raycastTarget = false;
             return text;

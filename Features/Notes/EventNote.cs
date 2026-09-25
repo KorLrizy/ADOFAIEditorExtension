@@ -1,5 +1,6 @@
 using ADOFAI;
 using ADOFAIEditorExtension.PropertyCollection;
+using ADOFAIEditorExtension.Utils;
 using HarmonyLib;
 using System;
 using System.Collections.Generic;
@@ -11,8 +12,8 @@ namespace ADOFAIEditorExtension.Features.Notes
     ///
     /// 为什么这样就够了：原版 `PropertiesPanel.Init` 遍历 `info.propertiesInfo` 逐个建行，
     /// 所以注册完面板自动多出一行输入框；输入走 `PropertyControl_Text` 的 onEndEdit →
-    /// `selectedEvent[name] = text`（进 data），保存/读档走原版 `LevelEvent.Encode/Decode`
-    /// —— **一个新补丁都不需要**（行标签由 `Property.set_info` 按 dict 的 `key` 取，配上本模组
+    /// `selectedEvent[name] = text`（进 data），序列化交给原版 —— 除了下面摘掉空备注的那一个补丁，
+    /// **一个新补丁都不需要**（行标签由 `Property.set_info` 按 dict 的 `key` 取，配上本模组
     /// 现成的 `RDString.GetWithCheck` 补丁就能显示中文）。
     ///
     /// 三个声明细节都是照原版 ctor 定的：
@@ -25,7 +26,7 @@ namespace ADOFAIEditorExtension.Features.Notes
     ///    没有任何引用（死字段），所以不做长度限制；`localizable` 会改变 `GetStringLocalized` 的语义，不开。
     ///
     /// 落盘：本属性**不挂**"把分组归属写进关卡文件"那个开关 —— 备注是用户内容，始终注册、始终可保存。
-    /// 空备注由下面的 `Encode` 后置补丁摘掉（见该类的注释），所以不会给每个事件都留一个 `"aeeNote": ""`。
+    /// 空备注由下面的保存前置补丁摘掉（见该类的注释），所以不会给每个事件都留一个 `"aeeNote": ""`。
     /// </summary>
     internal static class EventNote
     {
@@ -91,29 +92,59 @@ namespace ADOFAIEditorExtension.Features.Notes
     }
 
     /// <summary>
-    /// 空备注不落盘：`LevelEvent.Encode` 的返回值里把空的 `aeeNote` 摘掉。
+    /// 空备注不落盘：在**保存动作的入口**把空的 `aeeNote` 从事件 data 里摘掉。
     ///
-    /// 为什么不走"`canBeDisabled: true` + 手动维护 `disabled["aeeNote"]`"那条路（探索结论里的备选）：
-    /// 那样面板会先把这一行画成"关"（`disabled[name]`=true ⇒ offText 亮、控件隐藏），
-    /// 用户必须先点一下启用才能输入；而且 `LevelEvent.set_Item` 不动 disabled，还得再找地方补维护。
-    /// 改成在 `Encode` 出口摘空值：属性恒可用（见 EventNote 的说明），**一个补丁、一个点**，
-    /// 而且与"值怎么变成这样的"无关 —— 手输、多选批量写回、粘贴、撤销回退，保存时都会被这里纠正。
+    /// 为什么不挂 `LevelEvent.Encode`（v1 的做法）：r265 把关卡序列化从"每个事件 Encode 出一个
+    /// Dictionary、再整体转 JSON"改成了**直接拼文本**，`Encode` 的返回值随之从
+    /// `Dictionary&lt;string, object&gt;` 变成了 `string` —— 原先那个按 `Dictionary __result` 摘键的
+    /// 后置补丁签名对不上，已经打不上了（审计 A-6 / §41）。挂到保存入口去改 `data` 反而更稳：
+    /// 与"值怎么变成这样的"无关（手输、多选批量写回、粘贴、撤销回退都会纠正），也不依赖序列化怎么改。
     ///
-    /// 覆盖范围：全程序集里 `LevelEvent.Encode` 的调用者只有 `LevelData.EncodeToDictionary`、
-    /// `scnEditor.SaveLevel/SaveBackup/ExportLevel`（IL 扫描过），所以保存/备份/导出三条路都覆盖。
-    /// 有内容的备注**原样保留**，只摘空串/纯空白。
+    /// 也不走"`canBeDisabled: true` + 手动维护 `disabled["aeeNote"]`"那条路：那样面板会先把这一行画成
+    /// "关"（`disabled[name]`=true ⇒ offText 亮、控件隐藏），用户必须先点一下启用才能输入。
+    ///
+    /// 覆盖范围：IL 核过 `scnEditor` 上四个会写盘的出口 —— `SaveLevel` / `SaveBackup` /
+    /// `SaveLevelAs(bool, string)` / `ExportLevel(bool)`，即保存、备份、另存、导出四条路。
+    /// 有内容的备注**原样保留**，只摘 null / 空串 / 纯空白。
+    ///
+    /// 整个 Prefix 包在 try/catch 里：摘键只是清理，绝不能让异常打断玩家的保存流程。
     /// </summary>
-    [HarmonyPatch(typeof(LevelEvent), "Encode")]
-    internal static class EncodeNotePatch
+    [HarmonyPatch(typeof(scnEditor), "SaveLevel", new Type[0])]
+    [HarmonyPatch(typeof(scnEditor), "SaveBackup", new Type[0])]
+    [HarmonyPatch(typeof(scnEditor), "SaveLevelAs", new[] { typeof(bool), typeof(string) })]
+    [HarmonyPatch(typeof(scnEditor), "ExportLevel", new[] { typeof(bool) })]
+    internal static class SaveEmptyNoteStripPatch
     {
-        internal static void Postfix(Dictionary<string, object> __result)
+        internal static void Prefix(scnEditor __instance)
         {
-            if (__result == null)
+            try
+            {
+                scnEditor editor = __instance != null ? __instance : scnEditor.instance;
+                if (editor == null)
+                    return;
+                StripEmptyNotes(editor.decorations);
+                StripEmptyNotes(editor.events);
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("保存前摘除空备注失败: " + e.Message);
+            }
+        }
+
+        private static void StripEmptyNotes(List<LevelEvent> events)
+        {
+            if (events == null)
                 return;
-            if (!__result.TryGetValue(EventNote.KeyNote, out object value))
-                return;
-            if (value == null || EventNote.IsEmpty(value.ToString()))
-                __result.Remove(EventNote.KeyNote);
+            for (int i = 0; i < events.Count; i++)
+            {
+                LevelEvent e = events[i];
+                if (e == null || e.data == null)
+                    continue;
+                if (!e.data.TryGetValue(EventNote.KeyNote, out object value))
+                    continue;
+                if (value == null || EventNote.IsEmpty(value.ToString()))
+                    e.data.Remove(EventNote.KeyNote);
+            }
         }
     }
 }

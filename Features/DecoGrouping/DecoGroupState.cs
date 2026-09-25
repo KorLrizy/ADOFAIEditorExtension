@@ -125,7 +125,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 return;
             try
             {
-                Dictionary<string, object> data = e.GetData();
+                Dictionary<string, object> data = e.data;
                 if (data == null)
                     return;
                 data.Remove(MemberKeyOf(set));
@@ -195,7 +195,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                     continue;
                 try
                 {
-                    Dictionary<string, object> data = e.GetData();
+                    Dictionary<string, object> data = e.data;
                     if (data != null && data.Remove(key))
                         removed++;
                 }

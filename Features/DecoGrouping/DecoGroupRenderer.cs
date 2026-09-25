@@ -757,7 +757,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 text.color = label.color;
             }
             text.alignment = TextAlignmentOptions.Left;
-            text.textWrappingMode = TextWrappingModes.NoWrap;
+            text.enableWordWrapping = false;
             text.raycastTarget = true;
 
             GroupHeaderClickTarget target = go.AddComponent<GroupHeaderClickTarget>();

@@ -17,7 +17,7 @@
     <Deterministic>true</Deterministic>
     <LangVersion>8.0</LangVersion>
     <!-- 游戏安装目录。命令行可用 /p:GameDir="..." 覆盖 -->
-    <GameDir Condition="'$(GameDir)' == ''">D:\steam\steamapps\common\A Dance of Fire and Ice</GameDir>
+    <GameDir Condition="'$(GameDir)' == ''">D:\adofai2.9.8\A Dance of Fire and Ice</GameDir>
     <ManagedDir>$(GameDir)\A Dance of Fire and Ice_Data\Managed</ManagedDir>
     <!-- 编译后自动复制到游戏 Mods 目录；设 /p:DeployToGame=false 关闭 -->
     <DeployToGame Condition="'$(DeployToGame)' == ''">true</DeployToGame>
