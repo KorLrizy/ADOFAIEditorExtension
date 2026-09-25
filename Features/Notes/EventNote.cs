@@ -4,6 +4,7 @@ using ADOFAIEditorExtension.Utils;
 using HarmonyLib;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace ADOFAIEditorExtension.Features.Notes
 {
@@ -92,7 +93,9 @@ namespace ADOFAIEditorExtension.Features.Notes
     }
 
     /// <summary>
-    /// 空备注不落盘：在**保存动作的入口**把空的 `aeeNote` 从事件 data 里摘掉。
+    /// 保存前置的两件清理，挂在**保存动作的入口**（不是 `LevelEvent.Encode`）：
+    ///
+    /// ① **摘掉空的 `aeeNote`**：备注是随手填的，空的没必要落盘。
     ///
     /// 为什么不挂 `LevelEvent.Encode`（v1 的做法）：r265 把关卡序列化从"每个事件 Encode 出一个
     /// Dictionary、再整体转 JSON"改成了**直接拼文本**，`Encode` 的返回值随之从
@@ -103,11 +106,20 @@ namespace ADOFAIEditorExtension.Features.Notes
     /// 也不走"`canBeDisabled: true` + 手动维护 `disabled["aeeNote"]`"那条路：那样面板会先把这一行画成
     /// "关"（`disabled[name]`=true ⇒ offText 亮、控件隐藏），用户必须先点一下启用才能输入。
     ///
+    /// ② **按声明类型纠正 data 里的值**（§42 bug 1）：r265 的 `LevelEvent.Encode(bool)` 按 data 键遍历、
+    /// 按 `PropertyInfo.type` **硬转**（String/LongString/File/Color → `castclass System.String`，
+    /// Int/Rating → `unbox.any Int32`，Float/Bool 同理），类型不符直接 `InvalidCastException`；
+    /// 而 r148 的 Encode 不做任何 cast，所以旧版同样的写法没事。这个异常还被
+    /// `scnEditor.SaveLevel` 自己的 catch 吞成"保存失败！！！"弹框，玩家看不到原因
+    /// （异常可见性由 `Patches.LevelEncodeFinalizerPatch` 补，见 §42）。
+    /// 所以在编码之前把不一致的值就地纠正（纠正不了就摘键 —— 摘掉的键 Encode 会跳过，等于丢掉该属性默认值，
+    /// 总比整份关卡存不下去好）。只处理 `propertiesInfo` 里**注册过**的键：未注册的 Encode 本来就会跳过。
+    ///
     /// 覆盖范围：IL 核过 `scnEditor` 上四个会写盘的出口 —— `SaveLevel` / `SaveBackup` /
     /// `SaveLevelAs(bool, string)` / `ExportLevel(bool)`，即保存、备份、另存、导出四条路。
     /// 有内容的备注**原样保留**，只摘 null / 空串 / 纯空白。
     ///
-    /// 整个 Prefix 包在 try/catch 里：摘键只是清理，绝不能让异常打断玩家的保存流程。
+    /// 整个 Prefix 包在 try/catch 里：清理只是保险，绝不能让异常打断玩家的保存流程。
     /// </summary>
     [HarmonyPatch(typeof(scnEditor), "SaveLevel", new Type[0])]
     [HarmonyPatch(typeof(scnEditor), "SaveBackup", new Type[0])]
@@ -124,10 +136,12 @@ namespace ADOFAIEditorExtension.Features.Notes
                     return;
                 StripEmptyNotes(editor.decorations);
                 StripEmptyNotes(editor.events);
+                SanitizeDataTypes(editor.decorations);
+                SanitizeDataTypes(editor.events);
             }
             catch (Exception e)
             {
-                Main.Logger?.Log("保存前摘除空备注失败: " + e.Message);
+                Main.Logger?.Log("保存前置清理失败（摘空备注 / data 类型体检）: " + e.Message);
             }
         }
 
@@ -145,6 +159,147 @@ namespace ADOFAIEditorExtension.Features.Notes
                 if (value == null || EventNote.IsEmpty(value.ToString()))
                     e.data.Remove(EventNote.KeyNote);
             }
+        }
+
+        // ------------------------------------------------------------ data 类型体检（§42 bug 1）
+
+        /// <summary>同一次保存里同一个键只报一条日志：一份关卡动辄几千个事件，逐个报会刷屏。</summary>
+        private static readonly HashSet<string> loggedCorrections = new HashSet<string>(StringComparer.Ordinal);
+
+        private static void SanitizeDataTypes(List<LevelEvent> events)
+        {
+            if (events == null)
+                return;
+            for (int i = 0; i < events.Count; i++)
+            {
+                LevelEvent e = events[i];
+                if (e == null)
+                    continue;
+                Dictionary<string, object> data = e.data;
+                if (data == null || data.Count == 0)
+                    continue;
+                LevelEventInfo info = e.info;
+                if (info == null || info.propertiesInfo == null)
+                    continue;
+
+                // 快照键再遍历：纠正过程本身要往 data 里写/摘，边改边枚举会抛
+                List<string> keys = new List<string>(data.Keys);
+                for (int k = 0; k < keys.Count; k++)
+                {
+                    string key = keys[k];
+                    ADOFAI.PropertyInfo propertyInfo;
+                    if (!info.propertiesInfo.TryGetValue(key, out propertyInfo) || propertyInfo == null)
+                        continue;                     // 未注册的键 Encode 会跳过，不用管
+                    object value;
+                    if (!data.TryGetValue(key, out value) || value == null)
+                        continue;
+                    CorrectOne(info, data, key, value, propertyInfo.type);
+                }
+            }
+        }
+
+        private static void CorrectOne(LevelEventInfo info, Dictionary<string, object> data, string key, object value, PropertyType type)
+        {
+            switch (type)
+            {
+                // ---- 原版按 `castclass System.String` 转的四类
+                case PropertyType.String:
+                case PropertyType.LongString:
+                case PropertyType.File:
+                case PropertyType.Color:
+                    if (value is string)
+                        return;
+                    data[key] = Convert.ToString(value, CultureInfo.InvariantCulture);
+                    LogCorrection(info, key, value, type, "转成字符串");
+                    return;
+
+                // ---- 原版按 `unbox.any Int32` 转的两类
+                case PropertyType.Int:
+                case PropertyType.Rating:
+                    if (value is int)
+                        return;
+                    int integer;
+                    if (TryParseInt(value, out integer))
+                    {
+                        data[key] = integer;
+                        LogCorrection(info, key, value, type, "解析成 Int32");
+                    }
+                    else
+                    {
+                        data.Remove(key);
+                        LogCorrection(info, key, value, type, "解析失败，已摘键");
+                    }
+                    return;
+
+                case PropertyType.Float:
+                    if (value is float)
+                        return;
+                    float real;
+                    if (TryParseFloat(value, out real))
+                    {
+                        data[key] = real;
+                        LogCorrection(info, key, value, type, "解析成 Single");
+                    }
+                    else
+                    {
+                        data.Remove(key);
+                        LogCorrection(info, key, value, type, "解析失败，已摘键");
+                    }
+                    return;
+
+                case PropertyType.Bool:
+                    if (value is bool)
+                        return;
+                    bool flag;
+                    if (TryParseBool(value, out flag))
+                    {
+                        data[key] = flag;
+                        LogCorrection(info, key, value, type, "解析成 Boolean");
+                    }
+                    else
+                    {
+                        data.Remove(key);
+                        LogCorrection(info, key, value, type, "解析失败，已摘键");
+                    }
+                    return;
+
+                default:
+                    return;      // Enum / Vector2 / Export 等：原版不按标量硬转，这里不动
+            }
+        }
+
+        private static string Text(object value)
+        {
+            try { return Convert.ToString(value, CultureInfo.InvariantCulture); }
+            catch { return "<不可转换>"; }
+        }
+
+        private static bool TryParseInt(object value, out int result)
+        {
+            return int.TryParse(Text(value), NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
+        }
+
+        private static bool TryParseFloat(object value, out float result)
+        {
+            return float.TryParse(Text(value), NumberStyles.Float, CultureInfo.InvariantCulture, out result);
+        }
+
+        private static bool TryParseBool(object value, out bool result)
+        {
+            return bool.TryParse(Text(value), out result);
+        }
+
+        private static void LogCorrection(LevelEventInfo info, string key, object value, PropertyType type, string action)
+        {
+            if (Main.Logger == null)
+                return;
+            string signature = (info != null ? info.name : "?") + "/" + key + "/" + action;
+            if (!loggedCorrections.Add(signature))
+                return;
+            Main.Logger.Log(string.Format(
+                "保存前类型体检：{0}.{1} 声明为 {2}，实际是 {3}（值 {4}），已{5}",
+                info != null ? info.name : "?", key, type,
+                value != null ? value.GetType().FullName : "null", Text(value), action));
         }
     }
 }

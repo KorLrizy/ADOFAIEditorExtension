@@ -112,6 +112,7 @@
     <Compile Include="Localization.cs" />
     <Compile Include="Main.cs" />
     <Compile Include="Patches\EditorIntegrationPatches.cs" />
+    <Compile Include="Patches\LevelEncodePatch.cs" />
     <Compile Include="Patches\PropertyPanelPatches.cs" />
     <Compile Include="PrefabProperties.cs" />
     <Compile Include="PropertyCollection\Property.cs" />

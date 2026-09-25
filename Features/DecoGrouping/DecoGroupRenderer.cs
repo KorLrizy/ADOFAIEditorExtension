@@ -72,9 +72,20 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
     /// </summary>
     internal static class DecoGroupRenderer
     {
-        // 折叠标记（用转义写，避免源文件编码影响字形）
-        private const string ExpandedMark = "\u25BE";   // ▾
-        private const string CollapsedMark = "\u25B8";  // ▸
+        // 折叠标记（用转义写，避免源文件编码影响字形）。
+        // 首选 ▾/▸（U+25BE/U+25B8），但游戏的全套 CJK 字体（SourceHanSans 四语言）**都没有这两个码位**，
+        // TMP 遇到缺字不报错、直接画一个方框 —— 就是真机看到的"箭头变成方框"（§42 bug 3）。
+        // 所以 CreateArrow 里按字体自检：有就用首选，没有就回退到 ▼/▶（U+25BC/U+25B6，
+        // fontTools 实测在**全部**字体（CJK + 拉丁）里都有）。
+        private const string PreferredExpandedMark = "\u25BE";   // ▾
+        private const string PreferredCollapsedMark = "\u25B8";  // ▸
+        private const string ExpandedMark = "\u25BC";             // ▼
+        private const string CollapsedMark = "\u25B6";            // ▶
+
+        /// <summary>当前字体自检后的实际字形（由 <see cref="ResolveArrowMarks"/> 填，默认就是回退字形）。</summary>
+        private static string resolvedExpandedMark = ExpandedMark;
+        private static string resolvedCollapsedMark = CollapsedMark;
+        private static TMP_FontAsset resolvedMarkFont;
 
         private const float ArrowWidth = 22f;
 
@@ -108,6 +119,9 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             headerHolder = null;
             cachedCanvas = null;
             iconsCached = false;
+            resolvedMarkFont = null;
+            resolvedExpandedMark = ExpandedMark;
+            resolvedCollapsedMark = CollapsedMark;
             eyeOpenSprite = eyeClosedSprite = lockOpenSprite = lockClosedSprite = null;
             dropLine = null;
             cursorMark = null;
@@ -545,7 +559,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
             bool collapsed = DecoGroupState.CollapsedGroups.Contains(slot.Key);
             if (header.Arrow != null)
-                header.Arrow.text = collapsed ? CollapsedMark : ExpandedMark;
+                header.Arrow.text = collapsed ? resolvedCollapsedMark : resolvedExpandedMark;
             if (header.Label != null)
                 header.Label.text = slot.Label + (Main.ShowGroupCounts ? " (" + slot.Count + ")" : "");
 
@@ -759,11 +773,39 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             text.alignment = TextAlignmentOptions.Left;
             text.enableWordWrapping = false;
             text.raycastTarget = true;
+            // 先按这行实际用的字体定好字形，组头刷新文本时直接取（§42 bug 3：缺字会画成方框）
+            ResolveArrowMarks(text.font);
 
             GroupHeaderClickTarget target = go.AddComponent<GroupHeaderClickTarget>();
             target.Owner = marker;
             target.Area = GroupHitArea.Arrow;
             return text;
+        }
+
+        /// <summary>同一字体只自检一次（每次建行可能涉及几十个组头）。</summary>
+        private static void ResolveArrowMarks(TMP_FontAsset font)
+        {
+            if (font == null || ReferenceEquals(font, resolvedMarkFont))
+                return;
+            resolvedMarkFont = font;
+            resolvedExpandedMark = PickArrowMark(font, PreferredExpandedMark, ExpandedMark);
+            resolvedCollapsedMark = PickArrowMark(font, PreferredCollapsedMark, CollapsedMark);
+        }
+
+        /// <summary>字体里有首选码位就用它，否则回退（以后字体再变，最多退化观感，不会出方框）。</summary>
+        private static string PickArrowMark(TMP_FontAsset font, string preferred, string fallback)
+        {
+            try
+            {
+                // 这个 TMP 版本的签名：HasCharacter(char character, bool includeFallbacks, bool searchActiveCharacterTableOnly)
+                if (font.HasCharacter(preferred[0], true, false))
+                    return preferred;
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("检测箭头字形失败，按回退字形处理: " + e.Message);
+            }
+            return fallback;
         }
 
         /// <summary>组名是拉伸锚点时给它左边让出箭头的宽度（不是拉伸锚点就不动，避免破坏原版布局）。</summary>
