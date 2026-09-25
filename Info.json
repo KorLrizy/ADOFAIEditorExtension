@@ -1,0 +1,9 @@
+{
+  "Id": "ADOFAIEditorExtension",
+  "DisplayName": "ADOFAI Editor Extension",
+  "Author": "k",
+  "Version": "1.0.0",
+  "ManagerVersion": "0.22.14.0",
+  "AssemblyName": "ADOFAIEditorExtension.dll",
+  "EntryMethod": "ADOFAIEditorExtension.Startup.Load"
+}

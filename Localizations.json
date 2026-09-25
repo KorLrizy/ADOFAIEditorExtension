@@ -1,0 +1,296 @@
+{
+  "aee.title": {
+    "English": "ADOFAI Editor Extension",
+    "ChineseSimplified": "ADOFAI 编辑器扩展",
+    "ChineseTraditional": "ADOFAI 編輯器擴充",
+    "Korean": "ADOFAI 에디터 확장"
+  },
+  "aee.enabled": {
+    "English": "ADOFAI Editor Extension enabled",
+    "ChineseSimplified": "ADOFAI Editor Extension 已启用",
+    "ChineseTraditional": "ADOFAI Editor Extension 已啟用",
+    "Korean": "ADOFAI Editor Extension 활성화됨"
+  },
+  "aee.disabled": {
+    "English": "ADOFAI Editor Extension disabled",
+    "ChineseSimplified": "ADOFAI Editor Extension 已禁用",
+    "ChineseTraditional": "ADOFAI Editor Extension 已停用",
+    "Korean": "ADOFAI Editor Extension 비활성화됨"
+  },
+  "aee.decoGroupingEnabled": {
+    "English": "Group decorations list",
+    "ChineseSimplified": "装饰栏分组",
+    "ChineseTraditional": "裝飾欄分組",
+    "Korean": "장식 목록 그룹화"
+  },
+  "aee.autoGroupMode": {
+    "English": "Auto group mode",
+    "ChineseSimplified": "自动分组方式",
+    "ChineseTraditional": "自動分組方式",
+    "Korean": "자동 그룹 방식"
+  },
+  "aee.showGroupCounts": {
+    "English": "Show group counts",
+    "ChineseSimplified": "头行显示组内数量",
+    "ChineseTraditional": "頭行顯示組內數量",
+    "Korean": "그룹 개수 표시"
+  },
+  "aee.pagerListEnabled": {
+    "English": "Pager jump list",
+    "ChineseSimplified": "分页器直选列表",
+    "ChineseTraditional": "分頁器直選清單",
+    "Korean": "페이지 바로가기 목록"
+  },
+  "aee.pager.title": {
+    "English": "{0} ({1} stacked) - click to switch",
+    "ChineseSimplified": "{0}（共 {1} 个）—— 点击直接切换",
+    "ChineseTraditional": "{0}（共 {1} 個）—— 點擊直接切換",
+    "Korean": "{0} ({1}개) - 클릭하여 전환"
+  },
+  "aee.pager.current": {
+    "English": ">",
+    "ChineseSimplified": ">",
+    "ChineseTraditional": ">",
+    "Korean": ">"
+  },
+  "aee.pager.tagPrefix": {
+    "English": "tag=",
+    "ChineseSimplified": "tag=",
+    "ChineseTraditional": "tag=",
+    "Korean": "tag="
+  },
+  "aee.pager.eventTagPrefix": {
+    "English": "eventTag=",
+    "ChineseSimplified": "eventTag=",
+    "ChineseTraditional": "eventTag=",
+    "Korean": "eventTag="
+  },
+  "aee.pager.noTag": {
+    "English": "(no tag)",
+    "ChineseSimplified": "（无 tag）",
+    "ChineseTraditional": "（無 tag）",
+    "Korean": "(태그 없음)"
+  },
+  "aee.group.add": {
+    "English": "Add custom group",
+    "ChineseSimplified": "添加自定义分组",
+    "ChineseTraditional": "新增自訂分組",
+    "Korean": "사용자 그룹 추가"
+  },
+  "aee.group.name": {
+    "English": "Group {0} name",
+    "ChineseSimplified": "分组 {0} 名称",
+    "ChineseTraditional": "分組 {0} 名稱",
+    "Korean": "그룹 {0} 이름"
+  },
+  "aee.group.tag": {
+    "English": "Group {0} tag",
+    "ChineseSimplified": "分组 {0} 匹配 tag",
+    "ChineseTraditional": "分組 {0} 符合 tag",
+    "Korean": "그룹 {0} 태그"
+  },
+  "aee.group.tagPlaceholder": {
+    "English": "empty = match nothing (first such group = the rest)",
+    "ChineseSimplified": "留空 = 不按 tag 匹配（第一个这样的分组收纳其余装饰）",
+    "ChineseTraditional": "留空 = 不依 tag 符合（第一個這樣的分組收納其餘裝飾）",
+    "Korean": "비우면 태그로 거르지 않음 (첫 그룹이 나머지)"
+  },
+  "aee.group.delete": {
+    "English": "Delete group {0}",
+    "ChineseSimplified": "删除分组 {0}",
+    "ChineseTraditional": "刪除分組 {0}",
+    "Korean": "그룹 {0} 삭제"
+  },
+  "aee.group.tooMany": {
+    "English": "Custom groups are limited to 20.",
+    "ChineseSimplified": "自定义分组最多 20 个。",
+    "ChineseTraditional": "自訂分組最多 20 個。",
+    "Korean": "사용자 그룹은 최대 20개입니다."
+  },
+  "aee.group.untagged": {
+    "English": "Untagged",
+    "ChineseSimplified": "未分组",
+    "ChineseTraditional": "未分組",
+    "Korean": "태그 없음"
+  },
+  "aee.group.other": {
+    "English": "Other",
+    "ChineseSimplified": "其他",
+    "ChineseTraditional": "其他",
+    "Korean": "기타"
+  },
+  "aee.group.type.image": {
+    "English": "Images",
+    "ChineseSimplified": "图片",
+    "ChineseTraditional": "圖片",
+    "Korean": "이미지"
+  },
+  "aee.group.type.text": {
+    "English": "Text",
+    "ChineseSimplified": "文本",
+    "ChineseTraditional": "文字",
+    "Korean": "텍스트"
+  },
+  "aee.group.type.object": {
+    "English": "Objects",
+    "ChineseSimplified": "对象",
+    "ChineseTraditional": "物件",
+    "Korean": "오브젝트"
+  },
+  "aee.group.type.particle": {
+    "English": "Particles",
+    "ChineseSimplified": "粒子",
+    "ChineseTraditional": "粒子",
+    "Korean": "파티클"
+  },
+  "aee.group.mode.off": {
+    "English": "Group: off",
+    "ChineseSimplified": "分组：关",
+    "ChineseTraditional": "分組：關",
+    "Korean": "그룹: 끔"
+  },
+  "aee.group.mode.bytype": {
+    "English": "Group: type",
+    "ChineseSimplified": "分组：类型",
+    "ChineseTraditional": "分組：類型",
+    "Korean": "그룹: 유형"
+  },
+  "aee.group.mode.bytag": {
+    "English": "Group: tag",
+    "ChineseSimplified": "分组：标签",
+    "ChineseTraditional": "分組：標籤",
+    "Korean": "그룹: 태그"
+  },
+  "aee.group.mode.custom": {
+    "English": "Group: custom",
+    "ChineseSimplified": "分组：自定义",
+    "ChineseTraditional": "分組：自訂",
+    "Korean": "그룹: 사용자"
+  },
+  "enum.ADOFAIEditorExtension.AutoGroupMode.ByType": {
+    "English": "By type",
+    "ChineseSimplified": "按类型",
+    "ChineseTraditional": "依類型",
+    "Korean": "유형별"
+  },
+  "enum.ADOFAIEditorExtension.AutoGroupMode.ByTag": {
+    "English": "By tag",
+    "ChineseSimplified": "按标签",
+    "ChineseTraditional": "依標籤",
+    "Korean": "태그별"
+  },
+  "enum.ADOFAIEditorExtension.AutoGroupMode.Custom": {
+    "English": "Custom groups only",
+    "ChineseSimplified": "只用自定义分组",
+    "ChineseTraditional": "只用自訂分組",
+    "Korean": "사용자 그룹만"
+  },
+  "editor.decoGroupingEnabled.help": {
+    "English": "Group the decoration list on the left, with clickable group headers.",
+    "ChineseSimplified": "把左侧装饰栏分组显示，分组头行可点击折叠/展开。",
+    "ChineseTraditional": "把左側裝飾欄分組顯示，分組頭行可點擊摺疊/展開。",
+    "Korean": "왼쪽 장식 목록을 그룹으로 묶어 표시합니다. 그룹 머리글을 클릭해 접고 펼 수 있습니다."
+  },
+  "editor.autoGroupMode.help": {
+    "English": "By type: images / text / objects / particles. By tag: one group per decoration tag. Custom: only the groups you defined.",
+    "ChineseSimplified": "按类型：固定四组（图片/文本/对象/粒子）。按标签：每个装饰 tag 一组。自定义：只用你自己定义的分组。",
+    "ChineseTraditional": "依類型：固定四組（圖片/文字/物件/粒子）。依標籤：每個裝飾 tag 一組。自訂：只用你自己定義的分組。",
+    "Korean": "유형별: 이미지/텍스트/오브젝트/파티클 4개 그룹. 태그별: 태그마다 한 그룹. 사용자: 직접 정의한 그룹만 사용."
+  },
+  "editor.showGroupCounts.help": {
+    "English": "Show how many decorations each group contains.",
+    "ChineseSimplified": "在分组头行上显示组内装饰数量。",
+    "ChineseTraditional": "在分組頭行上顯示組內裝飾數量。",
+    "Korean": "각 그룹에 장식이 몇 개 들어 있는지 표시합니다."
+  },
+  "editor.pagerListEnabled.help": {
+    "English": "Click the pager text to open a jump list.",
+    "ChineseSimplified": "点击分页器文本弹出直选列表。",
+    "ChineseTraditional": "點擊分頁器文字彈出直選清單。",
+    "Korean": "페이지 표시를 클릭하면 바로 선택하는 목록이 열립니다."
+  },
+  "editor.addGroup.help": {
+    "English": "Add a custom group. With a match tag, decorations with that exact tag go here first. With an empty tag, the first such group collects everything else, and any further one starts empty - drag decorations into it.",
+    "ChineseSimplified": "添加自定义分组：填了匹配 tag 时，tag 精确相同的装饰优先归入该组；tag 留空时，第一个这样的分组自动收纳其余全部装饰，之后再建的空分组初始为空，可以把装饰拖进去。",
+    "ChineseTraditional": "新增自訂分組：填了符合 tag 時，tag 精確相同的裝飾優先歸入該組；tag 留空時，第一個這樣的分組會自動收納其餘全部裝飾，之後再建的空分組初始為空，可以把裝飾拖進去。",
+    "Korean": "사용자 그룹을 추가합니다. 태그를 적으면 태그가 정확히 같은 장식이 먼저 이 그룹으로 갑니다. 태그를 비우면 그런 첫 그룹이 나머지 장식을 모두 모으고, 그 다음 그룹들은 빈 상태로 생겨 드래그해 넣을 수 있습니다."
+  },
+  "aee.notify.copied": {
+    "English": "Copied {0} event(s)",
+    "ChineseSimplified": "已复制 {0} 个事件",
+    "ChineseTraditional": "已複製 {0} 個事件",
+    "Korean": "이벤트 {0}개 복사됨"
+  },
+  "aee.notify.cut": {
+    "English": "Cut {0} event(s)",
+    "ChineseSimplified": "已剪切 {0} 个事件",
+    "ChineseTraditional": "已剪下 {0} 個事件",
+    "Korean": "이벤트 {0}개 잘라냄"
+  },
+  "aee.notify.pasted": {
+    "English": "Pasted {0} event(s)",
+    "ChineseSimplified": "已粘贴 {0} 个事件",
+    "ChineseTraditional": "已貼上 {0} 個事件",
+    "Korean": "이벤트 {0}개 붙여넣음"
+  },
+  "aee.notify.multiSelected": {
+    "English": "Selected {0} event(s)",
+    "ChineseSimplified": "已选择 {0} 个事件",
+    "ChineseTraditional": "已選取 {0} 個事件",
+    "Korean": "이벤트 {0}개 선택"
+  },
+  "aee.notify.multiExit": {
+    "English": "Multi-select exited",
+    "ChineseSimplified": "已退出多选",
+    "ChineseTraditional": "已退出多選",
+    "Korean": "다중 선택 해제"
+  },
+  "aee.note": {
+    "English": "Event note",
+    "ChineseSimplified": "事件备注",
+    "ChineseTraditional": "事件備註",
+    "Korean": "이벤트 메모"
+  },
+  "editor.aee.note.help": {
+    "English": "A note for this event. It is stored in the level file (key aeeNote) and shown on the right side of the event row in the pager jump list; hover that row to read the whole note. The base game ignores the extra key, but a save made without this mod drops it.",
+    "ChineseSimplified": "给这个事件写一条备注。备注会写进关卡文件（键名 aeeNote），并显示在分页器直选列表里事件行的右侧，鼠标悬停可看完整内容。原版会忽略这个额外键，但用无 mod 的原版保存一次就会把它丢掉。",
+    "ChineseTraditional": "給這個事件寫一條備註。備註會寫進關卡檔案（鍵名 aeeNote），並顯示在分頁器直選清單裡事件列的右側，滑鼠懸停可看完整內容。原版會忽略這個額外鍵，但用無 mod 的原版儲存一次就會把它丟掉。",
+    "Korean": "이 이벤트에 메모를 남깁니다. 메모는 레벨 파일(aeeNote 키)에 저장되고 페이지 선택 목록의 이벤트 행 오른쪽에 표시되며, 그 행에 마우스를 올리면 전체 내용을 볼 수 있습니다. 원본 게임은 이 추가 키를 무시하지만, 모드 없이 저장하면 사라집니다."
+  },
+  "aee.eventGroupEditing": {
+    "English": "Edit target",
+    "ChineseSimplified": "编辑目标",
+    "ChineseTraditional": "編輯目標",
+    "Korean": "편집 대상"
+  },
+  "enum.ADOFAIEditorExtension.GroupEditTarget.Decoration": {
+    "English": "Decoration groups",
+    "ChineseSimplified": "装饰分组",
+    "ChineseTraditional": "裝飾分組",
+    "Korean": "장식 그룹"
+  },
+  "enum.ADOFAIEditorExtension.GroupEditTarget.Event": {
+    "English": "Event groups",
+    "ChineseSimplified": "事件分组",
+    "ChineseTraditional": "事件分組",
+    "Korean": "이벤트 그룹"
+  },
+  "aee.writeGroupConfig": {
+    "English": "Write grouping into the level file",
+    "ChineseSimplified": "把分组归属写进关卡文件",
+    "ChineseTraditional": "把分組歸屬寫進關卡檔案",
+    "Korean": "그룹 소속을 레벨 파일에 기록"
+  },
+  "editor.eventGroupEditing.help": {
+    "English": "Switch which custom-group list the rows below edit: decoration groups or event (pager) groups. The two lists are independent.",
+    "ChineseSimplified": "切换下面几行在编辑哪一套自定义分组：装饰分组 / 事件（直选弹窗）分组。两套互相独立。",
+    "ChineseTraditional": "切換下面幾行在編輯哪一套自訂分組：裝飾分組 / 事件（直選彈窗）分組。兩套互相獨立。",
+    "Korean": "아래 행이 어느 사용자 그룹 목록을 편집할지 전환합니다: 장식 그룹 또는 이벤트(페이지) 그룹. 두 목록은 서로 독립적입니다."
+  },
+  "editor.writeGroupConfig.help": {
+    "English": "Off (default): manual group membership lives only in this session. On: it is also stored in the level file (the base game ignores the extra keys).",
+    "ChineseSimplified": "关（默认）：手动归属只在本次会话内有效。开：同时写进关卡文件（原版会忽略这些额外键）。",
+    "ChineseTraditional": "關（預設）：手動歸屬只在本次工作階段內有效。開：同時寫進關卡檔案（原版會忽略這些額外鍵）。",
+    "Korean": "끄면(기본) 수동 소속은 이번 세션에만 유지됩니다. 켜면 레벨 파일에도 저장됩니다(원본 게임은 추가 키를 무시합니다)."
+  }
+}
