@@ -162,12 +162,14 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 // "showingPopup 时只处理 Esc" 的分支在方法体里，我们跑在它之前），
                 // 所以顺手当"每帧收尾"用：
                 //  ① 冲掉待弹的数量提示 + 补做欠一次的批量存活校验（§38.1 / §39 H3）；
-                //  ② 接管 Esc 关窗（§38.2：原版只收它自己的弹窗状态，我们这块自建窗口它管不到）。
+                //  ② 接管 Esc 关窗（§38.2：原版只收它自己的弹窗状态，我们这块自建窗口它管不到）；
+                //  ③ 自检"showingPopup 卡住"（§42 bug 2：只有状态变化才记一条，不每帧刷）。
                 // **整体兜异常**：前缀里抛出去，Harmony 会连原版方法体一起跳过 ⇒ 表现为
                 // "复制/粘贴/Esc 全都不通"，跟我们的代码看起来毫无关系（§39 M4）。
                 try
                 {
                     PagerListController.Tick();
+                    PagerListController.WarnIfPopupFlagStuck();
                     PagerListController.HandlePopupEscape();
                     PagerClipboard.HandleKeybinds();
                 }

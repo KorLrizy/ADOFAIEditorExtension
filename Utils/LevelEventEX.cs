@@ -21,5 +21,22 @@ namespace ADOFAIEditorExtension.Utils
             if (panel != null)
                 panel.SetProperties(e);
         }
+
+        /// <summary>
+        /// 按键取值，类型不对算取不到（照 r148 的 <c>LevelEvent.TryGet&lt;T&gt;</c> ——
+        /// r265 把这个实例方法删了，语义在这里原样补回，调用点不用改）。
+        /// </summary>
+        internal static bool TryGet<T>(this LevelEvent e, string key, out T value)
+        {
+            value = default;
+            if (e == null || e.data == null || !e.data.TryGetValue(key, out object raw))
+                return false;
+            if (raw is T t)
+            {
+                value = t;
+                return true;
+            }
+            return false;
+        }
     }
 }

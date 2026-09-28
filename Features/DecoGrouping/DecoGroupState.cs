@@ -110,7 +110,11 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             sessionMembers[e] = index;   // 会话内一直记着：关闭写文件时它就是唯一来源
             if (!Main.WriteGroupConfig)
                 return;
-            try { e[MemberKeyOf(set)] = index; }
+            // **必须写字符串**：这两个键在 AddInvisibleProperty 里声明成 String，而 r265 的
+            // `LevelEvent.Encode(bool)` 会按声明类型 `castclass System.String`，装箱的 int 直接抛
+            // InvalidCastException，被 scnEditor.SaveLevel 自己的 catch 吞成"保存失败！！！"（§42）。
+            // 读回侧 ParseInt 本来就吃字符串，所以只有写侧要改。
+            try { e[MemberKeyOf(set)] = index.ToString(); }
             catch { }
         }
 
@@ -125,7 +129,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 return;
             try
             {
-                Dictionary<string, object> data = e.GetData();
+                Dictionary<string, object> data = e.data;
                 if (data == null)
                     return;
                 data.Remove(MemberKeyOf(set));
@@ -195,7 +199,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                     continue;
                 try
                 {
-                    Dictionary<string, object> data = e.GetData();
+                    Dictionary<string, object> data = e.data;
                     if (data != null && data.Remove(key))
                         removed++;
                 }

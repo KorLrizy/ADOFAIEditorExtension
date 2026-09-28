@@ -233,8 +233,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
         private const float NoteTipMinWidth = 200f;         // 备注列很窄时浮层的兜底宽度
         private const float NoteTipPadding = 8f;            // 浮层内边距
         private const float NoteTipMargin = 6f;             // 浮层与弹窗边缘的最小距离
-        private const string ExpandedMark = "\u25BE";       // ▾（与装饰分组头一致）
-        private const string CollapsedMark = "\u25B8";      // ▸
+        // 与装饰分组头同一套字形（§42 bug 3）：U+25BC/U+25B6 在**全部**字体（CJK + 拉丁）里都有；
+        // 原先的 U+25BE/U+25B8 游戏的 CJK 字体（SourceHanSans 四语言）根本没这些码位，TMP 缺字直接画方框。
+        private const string ExpandedMark = "\u25BC";       // ▼（与装饰分组头一致）
+        private const string CollapsedMark = "\u25B6";      // ▶
         private const float HeaderArrowWidth = 22f;
         private const float HeaderArrowZoneMax = 160f;      // 箭头点击区上限：再宽就会把组名区挤没了
 
@@ -410,11 +412,42 @@ namespace ADOFAIEditorExtension.Features.PagerList
 
         // ------------------------------------------------------------------ 打开 / 关闭
 
+        /// <summary>
+        /// 打开弹窗。
+        ///
+        /// **从 `ShowWindow()` 那一刻起，原版的 `showingPopup` 就已经是 true 了**，而它一为 true，
+        /// `scnEditor.HandleKeyboardActions` 就只处理 Esc 然后 return —— 表现为"ctrl+S/复制/粘贴全废"
+        /// （§42 bug 2）。所以建行/排版这些后续步骤任何一处抛异常，都必须把窗口收回去
+        /// （`Close()` 负责 `ShowPopup(false, 233)`），否则标志就永久卡住，只能靠按一次 Esc 救回来。
+        /// </summary>
         private static void Open(InspectorTab tab, List<LevelEvent> stack)
         {
             if (!EnsureBuilt())
                 return;
 
+            try
+            {
+                OpenCore(tab, stack);
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("分页器列表打开失败，强制收窗: " + e);
+                isOpen = false;
+                try
+                {
+                    Close();
+                }
+                catch (Exception e2)
+                {
+                    Main.Logger?.Log("分页器列表收窗也失败，直接清 showingPopup: " + e2);
+                    try { scnEditor.instance?.ShowPopup(false, (scnEditor.PopupType)233, false); }
+                    catch { }
+                }
+            }
+        }
+
+        private static void OpenCore(InspectorTab tab, List<LevelEvent> stack)
+        {
             openTab = tab;
             openedFrame = Time.frameCount;
             PagerClipboard.InvalidateCache();   // 打开时重读一次原版键位表（用户可能刚改过键位）
@@ -429,6 +462,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             // **先把窗口显示出来，再建行**（§28.1）：行与备注文本如果是在"父层级还没激活"时创建的，
             // 备注那次 `text = …` 会被 TMP 吞掉（网格不重建）—— 表现就是"打开弹窗时备注列全空，
             // 随便点一行触发重建才出现"。而点行重建时弹窗已经是激活状态，所以那条路一直是好的。
+            // 这一步同时把原版的 showingPopup 置了位 ⇒ 从这里出去的任何异常都得走 Open() 的收窗兜底。
             ShowWindow();
 
             BuildSlots(stack);
@@ -758,6 +792,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             isOpen = false;
             openedFrame = -1;
             currentRowOrder = -1;
+            popupFlagStuck = null;
         }
 
         // ------------------------------------------------------------------ 列表内容
@@ -1078,7 +1113,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             text.fontSize = label.fontSize;
             text.color = highlighted ? NoteColorSelected : NoteColor;
             text.alignment = TextAlignmentOptions.Right;
-            text.textWrappingMode = TextWrappingModes.NoWrap;
+            text.enableWordWrapping = false;
             text.overflowMode = TextOverflowModes.Ellipsis;
             text.raycastTarget = false;
             // 备注是用户输入：关掉富文本，免得里面出现 <...> 时被 TMP 当标签解析
@@ -1201,7 +1236,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             }
             noteTooltipText.color = Color.white;
             noteTooltipText.alignment = TextAlignmentOptions.TopLeft;
-            noteTooltipText.textWrappingMode = TextWrappingModes.Normal;   // 长备注在这里换行
+            noteTooltipText.enableWordWrapping = true;   // 长备注在这里换行
             noteTooltipText.overflowMode = TextOverflowModes.Overflow;
             noteTooltipText.raycastTarget = false;
             noteTooltipText.richText = false;                              // 用户输入按字面显示
@@ -1897,7 +1932,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     target.SetProperties(fake, true);
                 MarkMixedLabels(target, fake);
                 MakeMixedRowsEditable(target, fake);
-                LogMultiEdit("绑定面板：" + fake.realEvents.Count + " 个事件，data " + fake.GetData().Count
+                LogMultiEdit("绑定面板：" + fake.realEvents.Count + " 个事件，data " + fake.data.Count
                     + " 键，混合值 " + mixedKeys.Count + " 个");
             }
             catch (Exception e)
@@ -1942,7 +1977,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 else
                 {
                     // 极端情况（没注册表）：退回"照搬第一个事件的 data"，至少还能用
-                    foreach (KeyValuePair<string, object> pair in first.GetData())
+                    foreach (KeyValuePair<string, object> pair in first.data)
                         data[pair.Key] = pair.Value;
                 }
 
@@ -2271,8 +2306,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 bool hasValue = false;
                 try { hasValue = fake.TryGet<object>(key, out value); }
                 catch { }
-                if (!hasValue && !fake.GetData().ContainsKey(key))
-                    hasValue = fake.GetData().TryGetValue(key, out value);      // TryGet 的类型转换失败时兜一手
+                if (!hasValue && !fake.data.ContainsKey(key))
+                    hasValue = fake.data.TryGetValue(key, out value);      // TryGet 的类型转换失败时兜一手
                 if (!hasValue)
                 {
                     // fake 上没有这个键（理论上不该发生）：直接退出，别把 null 写进所有事件
@@ -2517,11 +2552,20 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// 它只收掉**原版自己**的弹窗状态与遮罩，我们这块挂在 Canvas 下的自建窗口它管不到，
         /// 所以才出现"窗口不消失、但外面已经能点"。这里在同一个入口（我们的 Prefix 跑在它方法体之前）
         /// 自己把窗口收掉，之后原版照旧走它的 Esc 分支，互不打架。
+        ///
+        /// §42 bug 2：接管条件从"只看 isOpen"放宽成"isOpen 或 showingPopup"。因为存在
+        /// "showingPopup 已经是 true 而 isOpen 还是 false"的半死状态（`Open` 在 ShowWindow 之后、
+        /// 置 isOpen 之前抛异常；或 `Utils.Popup.ShowMessage` 中途失败），那种情况下
+        /// 原版快捷键全停摆而 Esc 又不接管，玩家就只能重开编辑器。
+        /// isOpen=false 这条分支**只做清标志该做的最小动作**：不去跑完整 Close() ——
+        /// 弹窗对象可能只建了一半，走完整路径反而容易再撞一次 NRE。
         /// </summary>
         internal static void HandlePopupEscape()
         {
-            if (!isOpen)
-                return;                            // 只有我们的弹窗开着时才接管 Esc
+            scnEditor editor = scnEditor.instance;
+            bool showingPopup = EditorShowsPopup(editor);
+            if (!isOpen && !showingPopup)
+                return;                            // 我们的窗没开、原版标志也没置位 ⇒ 不接管 Esc
             bool esc;
             // 用游戏自己的输入包装（RDInput）：本工程没有引用 UnityEngine.InputLegacyModule，
             // 直接调 Input.GetKeyDown 编译不过；RDInput.WentDown 就是"这一帧按下"，
@@ -2530,8 +2574,71 @@ namespace ADOFAIEditorExtension.Features.PagerList
             catch { return; }
             if (!esc)
                 return;
+
+            if (!isOpen)
+            {
+                LogMultiEdit("Esc：弹窗未开但 showingPopup 卡住 ⇒ 只清标志");
+                try { editor.ShowPopup(false, (scnEditor.PopupType)233, false); }
+                catch (Exception e) { Main.Logger?.Log("清 showingPopup 失败: " + e.Message); }
+                return;
+            }
+
             LogMultiEdit("Esc 关窗（等价于点 OK，保留多选：" + BatchCount() + " 个事件）");
             Close(true);
+        }
+
+        // ------------------------------------------------------ showingPopup 卡住的自检（§42 bug 2）
+
+        /// <summary>
+        /// 原版的 `showingPopup`（编译器生成的私有 backing field，字段名的哈希随版本变，
+        /// 所以沿用 <see cref="PagerClipboard"/> 的写法：按名字反射读、非泛型 Get + is 判断，
+        /// 成员缺失时不会在值类型上转炸）。
+        /// </summary>
+        private static bool EditorShowsPopup(scnEditor editor)
+        {
+            if (editor == null)
+                return false;
+            try { return editor.Get("showingPopup") is bool showing && showing; }
+            catch { return false; }
+        }
+
+        /// <summary>上一次自检看到的"卡住"状态；null = 还没记过（保证第一跳必打一条）。</summary>
+        private static bool? popupFlagStuck;
+
+        /// <summary>自检节流：`showingPopup` 要反射读（DynamicInvoke），每 0.5 秒查一次就够（§42 bug 2）。</summary>
+        private const float FlagStuckCheckSeconds = 0.5f;
+        private static float nextFlagStuckCheck = -1f;
+
+        /// <summary>
+        /// 诊断：原版弹窗标志为 true、而我们和消息弹窗都没开 ⇒ 记一条"showingPopup 卡住"。
+        /// 由 <see cref="PagerListPatches.PagerKeybindPatch"/> 每帧调，但内部按
+        /// <see cref="FlagStuckCheckSeconds"/> 节流，且**只在状态变化时打**，不每帧刷。
+        /// </summary>
+        internal static void WarnIfPopupFlagStuck()
+        {
+            if (Time.unscaledTime < nextFlagStuckCheck)
+                return;
+            scnEditor editor = scnEditor.instance;
+            if (editor == null)
+                return;
+            nextFlagStuckCheck = Time.unscaledTime + FlagStuckCheckSeconds;
+            bool stuck = EditorShowsPopup(editor) && !isOpen && !IsMessagePopupUp();
+            if (popupFlagStuck == stuck)
+                return;
+            bool wasStuck = popupFlagStuck.GetValueOrDefault();
+            popupFlagStuck = stuck;
+            if (stuck)
+                Main.Logger?.Log("showingPopup 卡住：原版弹窗标志为 true 但我们的弹窗与消息弹窗都没开"
+                    + "（此状态会让 ctrl+S 等所有编辑器快捷键失效，按一次 Esc 可清）");
+            else if (wasStuck)
+                Main.Logger?.Log("showingPopup 恢复正常");
+        }
+
+        /// <summary>我们的消息弹窗（<see cref="Popup"/>）当前是否显示中。</summary>
+        private static bool IsMessagePopupUp()
+        {
+            try { return ADOFAIEditorExtension.Utils.Popup.popup != null && ADOFAIEditorExtension.Utils.Popup.popup.activeSelf; }
+            catch { return false; }
         }
 
         // ---------------------------------------------------------------- 左上角提示（§34.4）
@@ -3312,7 +3419,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 text.fontSharedMaterial = source.fontSharedMaterial;
                 text.fontSize = source.fontSize;
                 text.color = source.color;
-                text.textWrappingMode = TextWrappingModes.NoWrap;
+                text.enableWordWrapping = false;
                 text.overflowMode = TextOverflowModes.Ellipsis;
             }
             // 垂直方向强制居中：原版对齐可能是 Top*，会贴着顶边画，同样会盖住上边线

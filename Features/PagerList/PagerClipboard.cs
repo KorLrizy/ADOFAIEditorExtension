@@ -35,7 +35,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
     ///    而弹窗的当前行一直与它同步）；
     ///  · 多选（弹窗自己的多选集，原版没有这种状态）⇒ 原版**没有**"一次复制多个事件"的入口，
     ///    这里按原版剪贴板格式自己拼：`clipboard` 里放一条 `scnEditor+FloorData`、
-    ///    `clipboardContent = Floors(1)`，每个事件用 `LevelEvent.CopyShallow()` 复制并把 `floor` 改成源砖
+    ///    `clipboardContent = Floors(1)`，每个事件用 8 参 ctor 浅拷贝（r265 删了 `LevelEvent.CopyShallow()`，
+    ///    见 <see cref="CopyEventsForClipboard"/>）并把 `floor` 改成源砖
     ///    （与原版 `scnEditor.CopyEvent(ev, floor)` 做的事一样）；粘贴依旧交回原版 action。
     /// </summary>
     internal static class PagerClipboard
@@ -358,6 +359,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// <summary>
         /// 按原版 `scnEditor.CopyEvent(eventToCopy, floor)` 的做法造副本：浅拷贝 + 把 floor 改成源砖。
         /// （纯逻辑，离线 harness 直接断言。）
+        ///
+        /// 不用新 dll 的 `LevelEvent.Copy()`：它照抄源事件的 visible/locked，副本会带着源事件的隐藏/锁定态；
+        /// 原版的浅拷贝语义是"激活、可见、未锁"，这里用 8 参 ctor 逐参写死。
         /// </summary>
         internal static List<LevelEvent> CopyEventsForClipboard(List<LevelEvent> events, int floorID)
         {
@@ -368,7 +372,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             {
                 if (ev == null)
                     continue;
-                LevelEvent copy = ev.CopyShallow();
+                LevelEvent copy = new LevelEvent(ev.floor, ev.eventType, ev.info, ev.data, ev.disabled, true, true, false);
                 copy.floor = floorID;
                 copies.Add(copy);
             }
