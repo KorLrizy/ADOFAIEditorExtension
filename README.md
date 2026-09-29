@@ -55,7 +55,7 @@
 
 ## 环境要求
 
-- **游戏**：A Dance of Fire and Ice **r148**（PC / Steam，64 位）
+- **游戏**：A Dance of Fire and Ice **v3.3.1**（r148，Unity 6000.3）（PC / Steam，64 位）；v2.9.8 请使用 [`v2` 分支](https://github.com/KorLrizy/ADOFAIEditorExtension/tree/v2)的版本
 - **模组管理器**：[Unity Mod Manager](https://github.com/sinai-dev/UnityModManager) **0.32.5+**
 - 运行时依赖由游戏与 UMM 提供：Harmony（`Mods/UnityModManager/0Harmony.dll`）、Newtonsoft.Json——**无需额外安装**
 - 编译期依赖 .NET Framework 4.8 参考程序集，仅[从源码构建](#从源码构建)时需要
@@ -150,7 +150,7 @@ ADOFAI Editor extension\
 │   └── PagerListPatches.cs        Harmony 补丁集（InspectorTab.Init / 选区与面板切换时关闭 / 弹窗快捷键）
 ├── Features\Notes\
 │   └── EventNote.cs               事件备注（aeeNote 属性注册 + 空备注不落盘的 Encode 后置补丁）
-├── Properties\AssemblyInfo.cs     程序集信息与版本（1.0.0.0）
+├── Properties\AssemblyInfo.cs     程序集信息与版本（1.1.0.0）
 ├── LICENSE                        MIT
 └── README.md
 ```
