@@ -56,7 +56,7 @@
 
 ## 环境要求
 
-- **游戏**：A Dance of Fire and Ice **r148**（PC / Steam，64 位）
+- **游戏**：A Dance of Fire and Ice **2.9.8（r265，Unity 2022.3）**（PC，64 位）；r148 请使用 [`r148` 分支](https://github.com/KorLrizy/ADOFAIEditorExtension/tree/r148)的版本
 - **模组管理器**：[Unity Mod Manager](https://github.com/sinai-dev/UnityModManager) **0.32.5+**
 - 运行时依赖由游戏与 UMM 提供：Harmony（`Mods/UnityModManager/0Harmony.dll`）、Newtonsoft.Json——**无需额外安装**
 - 编译期依赖 .NET Framework 4.8 参考程序集，仅[从源码构建](#从源码构建)时需要
