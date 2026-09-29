@@ -50,7 +50,8 @@
 
 模组自带一个 UI 标签页（放在编辑器的原版标签页序列里），用于开关上述功能、选择默认分组方式、
 管理装饰 / 事件两套互相独立的自定义分组。实现上把本模组伪装成一个"设置型关卡事件"注入游戏原生设置面板，
-字段值存于该标签页自己的 `LevelEvent`，因此**同一进程内切换关卡设置不丢**。
+字段值存于该标签页自己的 `LevelEvent`，因此**同一进程内切换关卡设置不丢**；
+同时持久化到 mod 目录下的 `Settings.json`，**重启游戏后仍然保留**。
 设置项包括：装饰分组总开关、分组方式、组头是否显示数量、分页器直选列表开关、编辑目标（装饰分组 / 事件分组）、
 以及"把分组归属写进关卡文件"开关（默认关闭）。
 
@@ -114,7 +115,8 @@ MSBuild ADOFAIEditorExtension.csproj -p:Configuration=Release -p:GameDir="D:\ste
 - 分页器直选列表是自建弹窗（克隆原版 `okPopupContainer`（缺失时退回 `largeOkPopupContainer`）+ 自建 `ScrollRect`，
   行克隆装饰列表自己的行 prefab `listItemPool.itemPrefab`），因为原版 `ShowNotificationPopup` 的滚动高度按正文文本定死、且点选项不会关窗。
   如果游戏更新改动了这些预制体，弹窗可能失效——遇到时请在 Issues 里附游戏版本号与复现步骤。
-- 设置项存于标签页自己的 `LevelEvent`，同一进程内跨关卡保留；**重启游戏后回到设置页里的默认值**。
+- 设置项存于标签页自己的 `LevelEvent`，同一进程内跨关卡保留；并持久化到 mod 目录下的 `Settings.json`
+  （用户数据，不随 mod 发布），**重启游戏后仍然保留**。删掉该文件即恢复默认值。
 
 ## 目录结构
 
