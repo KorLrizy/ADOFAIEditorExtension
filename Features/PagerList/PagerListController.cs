@@ -356,6 +356,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
         // 拖拽落点反馈（弹窗内自建：白横线 + 跟随鼠标的小方块，规格同装饰列表那套）
         private static RectTransform dropLine;
         private static RectTransform cursorMark;
+        private static TMP_Text countLabel;            // 多选整批拖动时方块旁的 "×N"
         private static bool dropObjectsResolved;
         private static bool dropFeedbackLogged;
 
@@ -935,6 +936,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             }
             dropLine = null;
             cursorMark = null;
+            countLabel = null;
             dropObjectsResolved = false;
             dropFeedbackLogged = false;
             // 备注浮层是弹窗的子对象，随场景一起销毁，这里只清引用
@@ -3254,28 +3256,50 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 ClearDropFeedback();
                 return;
             }
+            List<int> moving = currentStack != null ? CollectMovingIndices(draggingIndex, currentStack.Count) : new List<int> { draggingIndex };
+            bool hasReassign = HasPagerReassign(draggingIndex, target);
+            // 落在正在移动的行上 ⇒ 松手不排序（见 ApplyDrop）：没有要改归属的就什么都不会发生 ⇒ 不给反馈；
+            // 有的话只改归属 ⇒ 保留分组高亮与跟随方块，但不画插入线
+            bool anchorInMoving = !target.IsHeaderDrop && moving.Contains(target.AnchorIndex);
+            if (anchorInMoving && !hasReassign)
+            {
+                ClearDropFeedback();
+                return;
+            }
             SetGroupHighlight(target.Key);
             // PACL2 BetterUndoRedo 下"纯排序"松手会被忽略（见 Utils\Pacl2Compat.cs）⇒ 不画落点白线/小方块，
             // 只保留分组高亮，免得给一个不会生效的落点做反馈
-            if (Pacl2Compat.IsBetterUndoRedoActive() && !HasPagerReassign(draggingIndex, target))
+            if (Pacl2Compat.IsBetterUndoRedoActive() && !hasReassign)
             {
-                if (dropLine != null && dropLine.gameObject.activeSelf)
-                    dropLine.gameObject.SetActive(false);
-                if (cursorMark != null && cursorMark.gameObject.activeSelf)
-                    cursorMark.gameObject.SetActive(false);
+                HideDropIndicator();
                 return;
             }
-            ShowDropIndicator(target, screenPosition);
+            if (anchorInMoving)
+            {
+                ResolveDropObjects();
+                if (dropLine != null && dropLine.gameObject.activeSelf)
+                    dropLine.gameObject.SetActive(false);
+                ShowCursorMark(screenPosition, moving.Count);
+                return;
+            }
+            ShowDropIndicator(target, screenPosition, moving);
         }
 
         internal static void ClearDropFeedback()
         {
             SetGroupHighlight(null);
+            HideDropIndicator();
+            dropFeedbackLogged = false;
+        }
+
+        private static void HideDropIndicator()
+        {
             if (dropLine != null && dropLine.gameObject.activeSelf)
                 dropLine.gameObject.SetActive(false);
             if (cursorMark != null && cursorMark.gameObject.activeSelf)
                 cursorMark.gameObject.SetActive(false);
-            dropFeedbackLogged = false;
+            if (countLabel != null && countLabel.gameObject.activeSelf)
+                countLabel.gameObject.SetActive(false);
         }
 
         /// <summary>高亮落点分组的头行（原版选中行样式：白底黑字），传 null 还原。</summary>
@@ -3298,8 +3322,11 @@ namespace ADOFAIEditorExtension.Features.PagerList
             }
         }
 
-        /// <summary>落点白线的世界 Y：插到锚点行之前 ⇒ 该行上沿，之后 ⇒ 该行下沿；落在组头 ⇒ 该组末尾。</summary>
-        private static bool TryGetIndicatorWorldY(DropTarget target, out float worldY)
+        /// <summary>
+        /// 落点白线的世界 Y：插到锚点行之前 ⇒ 该行上沿，之后 ⇒ 该行下沿；落在组头 ⇒ 该组末尾。
+        /// 组尾按"不算正在移动的行"找（与 ApplyDrop 里 FindGroupLastEvent 的锚点一致）。
+        /// </summary>
+        private static bool TryGetIndicatorWorldY(DropTarget target, List<int> moving, out float worldY)
         {
             worldY = 0f;
             if (!target.IsHeaderDrop)
@@ -3313,6 +3340,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
             for (int i = rows.Count - 1; i >= 0 && i < slots.Count; i--)
             {
                 if (slots[i].IsHeader || slots[i].Key != target.Key || rows[i] == null)
+                    continue;
+                if (moving != null && moving.Contains(slots[i].OriginalIndex))
                     continue;
                 return TryGetBottomEdge(rows[i].transform as RectTransform, out worldY);
             }
@@ -3360,10 +3389,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
             return TryGetWorldRange(rect, out _, out bottomWorldY);
         }
 
-        private static void ShowDropIndicator(DropTarget target, Vector2 screenPosition)
+        private static void ShowDropIndicator(DropTarget target, Vector2 screenPosition, List<int> moving)
         {
             ResolveDropObjects();
-            if (dropLine == null || !TryGetIndicatorWorldY(target, out float worldY))
+            if (dropLine == null || !TryGetIndicatorWorldY(target, moving, out float worldY))
                 return;
 
             RectTransform viewport = scrollRect != null ? scrollRect.viewport : null;
@@ -3389,15 +3418,76 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     worldY, bottomY, topY, dropLine.gameObject.activeInHierarchy));
             }
 
-            if (cursorMark != null)
+            ShowCursorMark(screenPosition, moving != null ? moving.Count : 1);
+        }
+
+        /// <summary>跟随鼠标的小方块；<paramref name="count"/> ≥ 2（多选整批）时在它右边显示 "×N"。</summary>
+        private static void ShowCursorMark(Vector2 screenPosition, int count)
+        {
+            if (cursorMark == null)
+                return;
+            var parentRect = cursorMark.parent as RectTransform;
+            if (parentRect == null
+                || !RectTransformUtility.ScreenPointToLocalPointInRectangle(parentRect, screenPosition, ResolveCamera(), out Vector2 local))
+                return;
+            cursorMark.localPosition = local;
+            cursorMark.gameObject.SetActive(true);
+
+            if (count < 2)
             {
-                var parentRect = cursorMark.parent as RectTransform;
-                if (parentRect != null
-                    && RectTransformUtility.ScreenPointToLocalPointInRectangle(parentRect, screenPosition, ResolveCamera(), out Vector2 local))
+                if (countLabel != null && countLabel.gameObject.activeSelf)
+                    countLabel.gameObject.SetActive(false);
+                return;
+            }
+            EnsureCountLabel(parentRect);
+            if (countLabel == null)
+                return;
+            countLabel.text = "×" + count;
+            countLabel.rectTransform.localPosition = local + new Vector2(cursorMark.rect.width * 0.5f + 4f, 0f);
+            if (!countLabel.gameObject.activeSelf)
+                countLabel.gameObject.SetActive(true);
+            countLabel.transform.SetAsLastSibling();
+        }
+
+        /// <summary>懒建 "×N" 标签：字体/字号照抄弹窗里事件行名的 TMP（取不到就用 TMP 默认字体）。</summary>
+        private static void EnsureCountLabel(RectTransform parent)
+        {
+            if (countLabel != null || parent == null)
+                return;
+            try
+            {
+                var go = new GameObject("aee_pagerDropCount", typeof(RectTransform), typeof(TextMeshProUGUI));
+                var rect = (RectTransform)go.transform;
+                rect.SetParent(parent, false);
+                rect.anchorMin = rect.anchorMax = new Vector2(0.5f, 0.5f);
+                rect.pivot = new Vector2(0f, 0.5f);
+                rect.sizeDelta = new Vector2(80f, 24f);
+
+                TextMeshProUGUI text = go.GetComponent<TextMeshProUGUI>();
+                TMP_Text style = null;
+                for (int i = 0; i < rows.Count && style == null; i++)
                 {
-                    cursorMark.localPosition = local;
-                    cursorMark.gameObject.SetActive(true);
+                    ListItem item = rows[i] != null ? rows[i].GetComponent<ListItem>() : null;
+                    TMP_Text label = item != null ? item.Get<TMP_Text>("itemName") : null;
+                    if (label != null && label.font != null)
+                        style = label;
                 }
+                if (style != null)
+                {
+                    text.font = style.font;
+                    text.fontSharedMaterial = style.fontSharedMaterial;
+                    text.fontSize = style.fontSize;
+                }
+                text.color = Color.white;
+                text.alignment = TextAlignmentOptions.Left;
+                text.textWrappingMode = TextWrappingModes.NoWrap;
+                text.raycastTarget = false;
+                go.SetActive(false);
+                countLabel = text;
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("分页器拖动数量标签创建失败（不影响拖动）: " + e.Message);
             }
         }
 
@@ -3520,6 +3610,14 @@ namespace ADOFAIEditorExtension.Features.PagerList
             if (reorderSuppressed)
                 move = false;
 
+            // 诊断：拖的是哪一行、当时选中了哪些、实际搬了哪些（排查"多选只进了一个"一类问题靠这行）
+            Main.Logger?.Log(string.Format(
+                "分页器直选：拖动 index={0}，选中集=[{1}]，移动=[{2}]，目标={3}，锚点={4}，改归属={5} 个，排序={6}{7}",
+                draggingIndex, string.Join(",", SortedSelection()), string.Join(",", moving), target.Key,
+                target.IsHeaderDrop ? "组尾" : anchorInMoving ? "移动集合内部" : (target.Before ? "行前" : "行后"),
+                toAssign.Count, move ? "是" : "否",
+                reorderSuppressed ? "（PACL2 下同组重排被忽略）" : ""));
+
             if (toAssign.Count == 0 && !move)
             {
                 if (reorderSuppressed)
@@ -3577,6 +3675,14 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     catch { }
                 }
             }
+        }
+
+        /// <summary>选中集的升序快照（日志用）。</summary>
+        private static List<int> SortedSelection()
+        {
+            var list = new List<int>(selectedIndices);
+            list.Sort();
+            return list;
         }
 
         /// <summary>这次拖动要移动哪些行（stack 下标，升序 = 数组顺序）：拖的是选中行 ⇒ 整个选中集，否则只有它自己。</summary>

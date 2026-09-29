@@ -535,6 +535,14 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         /// </summary>
         internal static LevelEvent NextEventAfterGroup(string key)
         {
+            return NextEventAfterGroup(key, null);
+        }
+
+        /// <summary>
+        /// 同上，但跳过 <paramref name="exclude"/> 里的装饰（多选整批拖动时它们正被移走，不能拿来当锚点）。
+        /// </summary>
+        internal static LevelEvent NextEventAfterGroup(string key, ICollection<LevelEvent> exclude)
+        {
             if (string.IsNullOrEmpty(key))
                 return null;
             List<DecoGroupSlot> slots = Slots;
@@ -557,6 +565,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                     continue;   // 别的组的组头：继续往下找它（或再下一组）的第一行
                 if (GroupKeyOfEvent.TryGetValue(slot.Event, out string owner) && owner == key)
                     continue;   // 还是本组的成员
+                if (exclude != null && exclude.Contains(slot.Event))
+                    continue;   // 正被移走的装饰
                 return slot.Event;
             }
             return null;
@@ -565,10 +575,22 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         /// <summary>组内最后一个成员（显示顺序 = 装饰数组顺序）；组空或组头不在槽位表里时返回 null。</summary>
         internal static LevelEvent LastEventOfGroup(string key)
         {
+            return LastEventOfGroup(key, null);
+        }
+
+        /// <summary>同上，但跳过 <paramref name="exclude"/> 里的装饰；组里只剩被移动的装饰时返回 null。</summary>
+        internal static LevelEvent LastEventOfGroup(string key, ICollection<LevelEvent> exclude)
+        {
             if (string.IsNullOrEmpty(key))
                 return null;
-            if (EventsByGroup.TryGetValue(key, out List<LevelEvent> events) && events != null && events.Count > 0)
-                return events[events.Count - 1];
+            if (!EventsByGroup.TryGetValue(key, out List<LevelEvent> events) || events == null)
+                return null;
+            for (int i = events.Count - 1; i >= 0; i--)
+            {
+                LevelEvent e = events[i];
+                if (e != null && (exclude == null || !exclude.Contains(e)))
+                    return e;
+            }
             return null;
         }
 

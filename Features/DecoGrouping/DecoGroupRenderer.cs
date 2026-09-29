@@ -1163,25 +1163,59 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         /// </summary>
         internal static void UpdateDropFeedback(Vector2 screenPosition, LevelEvent dragging)
         {
+            UpdateDropFeedback(screenPosition, dragging, null);
+        }
+
+        /// <summary>
+        /// 同上；<paramref name="draggingSet"/> ≥ 2 个时是多选整批拖动：落点要对**整批**有效才给反馈
+        /// （口径同 <see cref="DecoGroupActions.IsBatchDropAcceptable"/>），鼠标旁方块边上显示 "×N"。
+        /// 落点落在被拖集合内部 ⇒ 松手只改归属不排序，所以不画插入线；连归属也不用改就什么都不显示。
+        /// </summary>
+        internal static void UpdateDropFeedback(Vector2 screenPosition, LevelEvent dragging, IList<LevelEvent> draggingSet)
+        {
             if (!TryFindDropTarget(screenPosition, out DecoGroupState.DropTarget target, out RectTransform hoveredRect))
             {
                 ClearDropFeedback();
                 return;
             }
 
-            // 落点要有意义才给反馈：可改归属的组、或"这个装饰自己的类型组"（= 从自定义分组放回来，§22.2）、
-            // 或**同组内排序**（拖回自己所在的组，见 §15.3）。别的类型组两者都做不到，就不给反馈。
-            bool meaningful = DecoGroupActions.TryResolveAssignment(target.Key, DecoGroupState.GroupSet.Decoration, dragging, out _)
-                || IsGroupOf(dragging, target.Key);
-            if (!meaningful)
+            bool batch = draggingSet != null && draggingSet.Count >= 2;
+            bool showLine = true;
+            ICollection<LevelEvent> exclude = null;
+            if (batch)
             {
-                ClearDropFeedback();
-                return;
+                if (!DecoGroupActions.IsBatchDropAcceptable(draggingSet, target.Key))
+                {
+                    ClearDropFeedback();
+                    return;
+                }
+                exclude = draggingSet;
+                if (target.Anchor != null && draggingSet.Contains(target.Anchor))
+                {
+                    if (!DecoGroupActions.BatchNeedsReassign(draggingSet, target.Key))
+                    {
+                        ClearDropFeedback();
+                        return;
+                    }
+                    showLine = false;
+                }
+            }
+            else
+            {
+                // 落点要有意义才给反馈：可改归属的组、或"这个装饰自己的类型组"（= 从自定义分组放回来，§22.2）、
+                // 或**同组内排序**（拖回自己所在的组，见 §15.3）。别的类型组两者都做不到，就不给反馈。
+                bool meaningful = DecoGroupActions.TryResolveAssignment(target.Key, DecoGroupState.GroupSet.Decoration, dragging, out _)
+                    || IsGroupOf(dragging, target.Key);
+                if (!meaningful)
+                {
+                    ClearDropFeedback();
+                    return;
+                }
             }
 
             SetGroupHighlight(target.Key);
-            HighlightHoveredRow(hoveredRect);
-            ShowDropIndicator(target, hoveredRect, screenPosition);
+            HighlightHoveredRow(showLine ? hoveredRect : null);
+            ShowDropIndicator(target, hoveredRect, screenPosition, showLine, exclude, batch ? draggingSet.Count : 1);
         }
 
         internal static void ClearDropFeedback()
@@ -1198,6 +1232,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 dropLine.gameObject.SetActive(false);
             if (cursorMark != null && cursorMark.gameObject.activeSelf)
                 cursorMark.gameObject.SetActive(false);
+            if (countLabel != null && countLabel.gameObject.activeSelf)
+                countLabel.gameObject.SetActive(false);
         }
 
         private static bool IsGroupOf(LevelEvent e, string key)
@@ -1254,8 +1290,12 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             return false;
         }
 
-        /// <summary>落点白横线的世界 Y：插到锚点行之前 ⇒ 该行上沿，之后 ⇒ 该行下沿；落在组头 ⇒ 组尾边界。</summary>
-        private static bool TryGetIndicatorWorldY(DecoGroupState.DropTarget target, RectTransform hoveredRect, out float worldY)
+        /// <summary>
+        /// 落点白横线的世界 Y：插到锚点行之前 ⇒ 该行上沿，之后 ⇒ 该行下沿；落在组头 ⇒ 组尾边界。
+        /// <paramref name="exclude"/>：多选整批拖动时正被移走的装饰，算"组尾"时跳过它们（与 DropDecorations 的锚点一致）。
+        /// </summary>
+        private static bool TryGetIndicatorWorldY(DecoGroupState.DropTarget target, RectTransform hoveredRect,
+            ICollection<LevelEvent> exclude, out float worldY)
         {
             worldY = 0f;
             if (target.Anchor != null)
@@ -1267,20 +1307,29 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
             // 组头：插到组尾 ⇒ 本组最后一个成员的下沿（与 DropDecoration 的锚点一致）；
             // 它不在视野里就取"下一组第一行"的上沿（显示上是同一个位置）
-            LevelEvent last = DecoGroupState.LastEventOfGroup(target.Key);
+            LevelEvent last = DecoGroupState.LastEventOfGroup(target.Key, exclude);
             if (last != null && TryGetShownRect(last, out RectTransform lastRect) && TryGetBottomEdge(lastRect, out worldY))
                 return true;
-            LevelEvent next = DecoGroupState.NextEventAfterGroup(target.Key);
+            LevelEvent next = DecoGroupState.NextEventAfterGroup(target.Key, exclude);
             if (next != null && TryGetShownRect(next, out RectTransform nextRect) && TryGetTopEdge(nextRect, out worldY))
                 return true;
             // 组内没有可见成员（空组 / 全部滚出视野）：退回组头下沿
             return TryGetBottomEdge(hoveredRect, out worldY);
         }
 
-        private static void ShowDropIndicator(DecoGroupState.DropTarget target, RectTransform hoveredRect, Vector2 screenPosition)
+        private static void ShowDropIndicator(DecoGroupState.DropTarget target, RectTransform hoveredRect, Vector2 screenPosition,
+            bool showLine, ICollection<LevelEvent> exclude, int count)
         {
             ResolveDropObjects();
-            if (dropLine == null || !TryGetIndicatorWorldY(target, hoveredRect, out float worldY))
+            if (!showLine)
+            {
+                // 落点在被拖集合内部：只改归属、不插入 ⇒ 不画线，只保留跟随方块与数量
+                if (dropLine != null && dropLine.gameObject.activeSelf)
+                    dropLine.gameObject.SetActive(false);
+                ShowCursorMark(screenPosition, count);
+                return;
+            }
+            if (dropLine == null || !TryGetIndicatorWorldY(target, hoveredRect, exclude, out float worldY))
                 return;
 
             // 夹进列表视口，保证不会被 Viewport 的 Mask 裁掉（落点在视口外时贴边显示）
@@ -1317,16 +1366,86 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 }
             }
 
-            if (cursorMark != null)
+            ShowCursorMark(screenPosition, count);
+        }
+
+        private static TMP_Text countLabel;          // 多选整批拖动时方块旁的 "×N"
+
+        /// <summary>跟随鼠标的小方块；<paramref name="count"/> ≥ 2 时在它右边显示 "×N"。</summary>
+        private static void ShowCursorMark(Vector2 screenPosition, int count)
+        {
+            if (cursorMark == null)
+                return;
+            var parentRect = cursorMark.parent as RectTransform;
+            if (parentRect == null
+                || !RectTransformUtility.ScreenPointToLocalPointInRectangle(parentRect, screenPosition, ResolveCamera(), out Vector2 local))
+                return;
+            cursorMark.localPosition = local;
+            cursorMark.gameObject.SetActive(true);
+
+            if (count < 2)
             {
-                var parentRect = cursorMark.parent as RectTransform;
-                if (parentRect != null
-                    && RectTransformUtility.ScreenPointToLocalPointInRectangle(parentRect, screenPosition, ResolveCamera(), out Vector2 local))
-                {
-                    cursorMark.localPosition = local;
-                    cursorMark.gameObject.SetActive(true);
-                }
+                if (countLabel != null && countLabel.gameObject.activeSelf)
+                    countLabel.gameObject.SetActive(false);
+                return;
             }
+            EnsureCountLabel(parentRect);
+            if (countLabel == null)
+                return;
+            countLabel.text = "×" + count;
+            countLabel.rectTransform.localPosition = local + new Vector2(cursorMark.rect.width * 0.5f + 4f, 0f);
+            if (!countLabel.gameObject.activeSelf)
+                countLabel.gameObject.SetActive(true);
+            countLabel.transform.SetAsLastSibling();
+        }
+
+        /// <summary>懒建 "×N" 标签：字体/字号照抄装饰列表行名的 TMP（取不到就用 TMP 默认字体）。</summary>
+        private static void EnsureCountLabel(RectTransform parent)
+        {
+            if (countLabel != null || parent == null)
+                return;
+            try
+            {
+                var go = new GameObject("aee_dropCount", typeof(RectTransform), typeof(TextMeshProUGUI));
+                var rect = (RectTransform)go.transform;
+                rect.SetParent(parent, false);
+                rect.anchorMin = rect.anchorMax = new Vector2(0.5f, 0.5f);
+                rect.pivot = new Vector2(0f, 0.5f);
+                rect.sizeDelta = new Vector2(80f, 24f);
+
+                TextMeshProUGUI text = go.GetComponent<TextMeshProUGUI>();
+                TMP_Text style = FindRowLabelStyle();
+                if (style != null)
+                {
+                    text.font = style.font;
+                    text.fontSharedMaterial = style.fontSharedMaterial;
+                    text.fontSize = style.fontSize;
+                }
+                text.color = Color.white;
+                text.alignment = TextAlignmentOptions.Left;
+                text.textWrappingMode = TextWrappingModes.NoWrap;
+                text.raycastTarget = false;
+                go.SetActive(false);
+                countLabel = text;
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("拖动数量标签创建失败（不影响拖动）: " + e.Message);
+            }
+        }
+
+        private static TMP_Text FindRowLabelStyle()
+        {
+            List<ListItem> shownItems = GetShownItems(FindPanel());
+            if (shownItems == null)
+                return null;
+            for (int i = 0; i < shownItems.Count; i++)
+            {
+                TMP_Text label = shownItems[i] != null ? shownItems[i].Get<TMP_Text>("itemName") : null;
+                if (label != null && label.font != null)
+                    return label;
+            }
+            return null;
         }
 
         /// <summary>

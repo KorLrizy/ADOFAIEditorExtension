@@ -152,8 +152,27 @@ namespace ADOFAIEditorExtension.Utils
         /// <param name="dragged">本次真正被拖动的那个场景装饰对象（单个）。</param>
         internal static IDisposable TryBeginDecorationDragScope(PropertyControl_DecorationsList list, scrDecoration dragged)
         {
-            if (list == null || dragged == null)
+            if (dragged == null)
                 return null;
+            return TryBeginDecorationDragScope(list, new List<scrDecoration>(1) { dragged });
+        }
+
+        /// <summary>
+        /// 多选整批重排版本（IL 已核，与原版 `OnItemDropSides` 喂给它的 `cachedDecorations` 同构）：
+        /// `DecoDragScope.Undo()` 以 `decoration[0]` 的**当前**下标 i0 为起点，把 `allDecorations[i0 + i]`
+        /// 逐个取出再整块 `InsertRange` 回 ctor 时记下的 `index`。所以调用方必须保证：
+        ///   · <paramref name="dragged"/> 按装饰数组下标**升序**排好（第 0 个 = 原位置最靠前的那个）；
+        ///   · 移动**之后**它们在数组里连续、顺序不变（我们整块插入，天然满足）；
+        ///   · 移动**之前**它们也是连续的一块——否则 Undo 只能把它们整块放回第 0 个的原位置，
+        ///     还原不出原来分散的排布（这个检查由调用方做，见 DecoGroupActions.DropDecorations）。
+        /// </summary>
+        internal static IDisposable TryBeginDecorationDragScope(PropertyControl_DecorationsList list, IList<scrDecoration> dragged)
+        {
+            if (list == null || dragged == null || dragged.Count == 0)
+                return null;
+            for (int i = 0; i < dragged.Count; i++)
+                if (dragged[i] == null)
+                    return null;
             if (!IsBetterUndoRedoActive())
                 return null;
             if (DecoDragScopeType == null || decoDragScopeCtor == null || cachedDecorationsField == null)
@@ -165,7 +184,7 @@ namespace ADOFAIEditorExtension.Utils
             try
             {
                 previous = cachedDecorationsField.GetValue(list);
-                var items = new List<scrDecoration>(1) { dragged };
+                var items = new List<scrDecoration>(dragged);
                 cachedDecorationsField.SetValue(list, items);
                 object scope = decoDragScopeCtor.Invoke(new object[] { list });
                 return new DecorationDragScope(cachedDecorationsField, list, previous, scope as IDisposable);
