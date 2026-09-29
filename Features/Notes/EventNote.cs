@@ -1,4 +1,5 @@
 using ADOFAI;
+using ADOFAIEditorExtension.Features.DecoGrouping;
 using ADOFAIEditorExtension.PropertyCollection;
 using HarmonyLib;
 using System;
@@ -25,7 +26,8 @@ namespace ADOFAIEditorExtension.Features.Notes
     ///    没有任何引用（死字段），所以不做长度限制；`localizable` 会改变 `GetStringLocalized` 的语义，不开。
     ///
     /// 落盘：本属性**不挂**"把分组归属写进关卡文件"那个开关 —— 备注是用户内容，始终注册、始终可保存。
-    /// 空备注由下面的 `Encode` 后置补丁摘掉（见该类的注释），所以不会给每个事件都留一个 `"aeeNote": ""`。
+    /// 空备注由下面的 `Encode` 后置补丁摘掉（见该类的注释），所以不会给每个事件都留一个 `"aeeNote": ""`
+    /// （调用链：`SaveLevel` → `LevelData.Encode` → `LevelData.EncodeToDictionary` → `LevelEvent.Encode`）。
     /// </summary>
     internal static class EventNote
     {
@@ -51,8 +53,11 @@ namespace ADOFAIEditorExtension.Features.Notes
                     LevelEventInfo info = pair.Value;
                     if (info == null || info.propertiesInfo == null)
                         continue;
-                    if (info.propertiesInfo.ContainsKey(KeyNote))
+                    if (info.propertiesInfo.TryGetValue(KeyNote, out ADOFAI.PropertyInfo existing) && existing != null)
+                    {
+                        existing.invisible = false;   // 禁用时被 SetHidden(true) 藏起来过 ⇒ 重新启用要复位
                         continue;
+                    }
 
                     var property = new Property_InputField(
                         name: KeyNote,
@@ -69,6 +74,30 @@ namespace ADOFAIEditorExtension.Features.Notes
             catch (Exception e)
             {
                 Main.Logger?.Log("注册事件备注属性失败: " + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// 禁用模组时隐藏"备注"行但**保留注册**：r148 的 Decode 只读、Encode 只写注册过的键，
+        /// 注册一摘，禁用状态下的保存/读档就会丢掉关卡里的备注。原版 PropertyInfo.CheckIfShown
+        /// 第一句就是 <c>if (invisible) return false</c>，所以标 invisible 即可让面板不再显示这一行。
+        /// </summary>
+        internal static void SetHidden(bool hidden)
+        {
+            if (GCS.levelEventsInfo == null)
+                return;
+            try
+            {
+                foreach (KeyValuePair<string, LevelEventInfo> pair in GCS.levelEventsInfo)
+                {
+                    if (pair.Value?.propertiesInfo != null
+                        && pair.Value.propertiesInfo.TryGetValue(KeyNote, out ADOFAI.PropertyInfo info) && info != null)
+                        info.invisible = hidden;
+                }
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("切换事件备注可见性失败: " + e.Message);
             }
         }
 
@@ -91,7 +120,15 @@ namespace ADOFAIEditorExtension.Features.Notes
     }
 
     /// <summary>
-    /// 空备注不落盘：`LevelEvent.Encode` 的返回值里把空的 `aeeNote` 摘掉。
+    /// 空备注 / 分组归属不该落盘的部分：`LevelEvent.Encode` 的返回值里摘掉。
+    ///  - 空的 `aeeNote`（空串/纯空白/null）；
+    ///  - 分组归属键（<see cref="DecoGroupState.IsMembershipKey"/>）值为空的（= 没有手动归属）；
+    ///  - "把分组归属写进关卡文件"关着时（<see cref="Main.WriteGroupConfig"/> == false）**全部**归属键。
+    /// 归属始终留在 data 里（键始终注册、默认 ""），开关只决定"保存时写不写"，所以只在这里摘。
+    ///
+    /// 为什么直接改 `__result` 是安全的：r148 的 `Encode(bool settings)` 每次都**新建**一个 Dictionary
+    /// 往里拷值，不是返回 data 本身；撤销用 `Copy()`、剪贴板用 `CopyShallow`，都不经过 Encode ⇒
+    /// 摘掉的只是这次保存的输出，活数据原封不动，不需要事后放回。
     ///
     /// 为什么不走"`canBeDisabled: true` + 手动维护 `disabled["aeeNote"]`"那条路（探索结论里的备选）：
     /// 那样面板会先把这一行画成"关"（`disabled[name]`=true ⇒ offText 亮、控件隐藏），
@@ -99,9 +136,11 @@ namespace ADOFAIEditorExtension.Features.Notes
     /// 改成在 `Encode` 出口摘空值：属性恒可用（见 EventNote 的说明），**一个补丁、一个点**，
     /// 而且与"值怎么变成这样的"无关 —— 手输、多选批量写回、粘贴、撤销回退，保存时都会被这里纠正。
     ///
-    /// 覆盖范围：全程序集里 `LevelEvent.Encode` 的调用者只有 `LevelData.EncodeToDictionary`、
-    /// `scnEditor.SaveLevel/SaveBackup/ExportLevel`（IL 扫描过），所以保存/备份/导出三条路都覆盖。
+    /// 覆盖范围：全程序集里 `LevelEvent.Encode` 的调用者只有 `LevelData.EncodeToDictionary`（IL 扫描过），
+    /// 调用链是 `scnEditor.SaveLevel / SaveBackup / GetExportLevelFiles / ExportLevel` → `LevelData.Encode`
+    /// → `LevelData.EncodeToDictionary` → `LevelEvent.Encode`，所以保存/备份/导出几条路都覆盖。
     /// 有内容的备注**原样保留**，只摘空串/纯空白。
+    /// 整段包 try/catch：清理只是锦上添花，绝不能让异常打断玩家的保存。
     /// </summary>
     [HarmonyPatch(typeof(LevelEvent), "Encode")]
     internal static class EncodeNotePatch
@@ -110,10 +149,64 @@ namespace ADOFAIEditorExtension.Features.Notes
         {
             if (__result == null)
                 return;
-            if (!__result.TryGetValue(EventNote.KeyNote, out object value))
-                return;
-            if (value == null || EventNote.IsEmpty(value.ToString()))
-                __result.Remove(EventNote.KeyNote);
+            try
+            {
+                if (__result.TryGetValue(EventNote.KeyNote, out object value)
+                    && (value == null || EventNote.IsEmpty(value.ToString())))
+                    __result.Remove(EventNote.KeyNote);
+
+                // 归属键：先看有没有（绝大多数事件没有），有才去读开关，免得每个事件都查一次设置
+                List<string> toRemove = null;
+                bool? writeGroups = null;
+                foreach (KeyValuePair<string, object> pair in __result)
+                {
+                    if (!DecoGroupState.IsMembershipKey(pair.Key))
+                        continue;
+                    if (writeGroups == null)
+                        writeGroups = Main.WriteGroupConfig;
+                    if (writeGroups == true && pair.Value != null && !string.IsNullOrWhiteSpace(pair.Value.ToString()))
+                        continue;
+                    (toRemove ?? (toRemove = new List<string>(2))).Add(pair.Key);
+                }
+                if (toRemove != null)
+                {
+                    for (int i = 0; i < toRemove.Count; i++)
+                        __result.Remove(toRemove[i]);
+                }
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("保存时清理事件备注/分组归属失败: " + e.Message);
+            }
+        }
+    }
+
+    /// <summary>
+    /// `LevelEvent.Encode` 抛异常时补一行 UMM 日志：r148 的 `SaveLevel` 会把编码异常吞掉
+    /// （只 `Debug.LogError` + 弹窗），UMM 日志里什么都没有，很难定位是哪个事件坏了。
+    /// 这里只记录事件类型与砖号，然后**原样把异常还回去**（返回 __exception），不改变原版的处理流程。
+    /// 单独一个补丁类：与上面的后置补丁互不影响（任一个打补丁失败不会连带另一个）。
+    /// </summary>
+    [HarmonyPatch(typeof(LevelEvent), "Encode")]
+    internal static class EncodeFinalizerPatch
+    {
+        internal static Exception Finalizer(Exception __exception, LevelEvent __instance)
+        {
+            if (__exception == null)
+                return null;
+            try
+            {
+                string type = "?";
+                string floor = "?";
+                if (__instance != null)
+                {
+                    type = __instance.eventType.ToString();
+                    floor = __instance.floor.ToString();
+                }
+                Main.Logger?.Log(string.Format("LevelEvent.Encode 失败（事件 {0}，砖 {1}）: {2}", type, floor, __exception));
+            }
+            catch { }
+            return __exception;
         }
     }
 }

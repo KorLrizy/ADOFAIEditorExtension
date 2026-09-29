@@ -1,7 +1,9 @@
 using ADOFAI;
 using ADOFAI.LevelEditor.Controls;
+using ADOFAIEditorExtension.Utils;
 using HarmonyLib;
 using System;
+using System.Collections.Generic;
 
 namespace ADOFAIEditorExtension.Features.DecoGrouping
 {
@@ -15,7 +17,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         [HarmonyPatch(typeof(PropertyControl_DecorationsList), "FilterSearchResults")]
         internal static class FilterSearchResultsPatch
         {
-            internal static void Postfix(PropertyControl_DecorationsList __instance)
+            internal static void Postfix(PropertyControl_DecorationsList __instance, bool adjustRect,
+                ref bool ___applyRefreshScrollRect, ref LevelEvent ___cacheEventForRectAdjust)
             {
                 DecoGroupRenderer.SyncReorderable(__instance);
                 if (!Main.IsDecoGroupingEnabled)
@@ -23,7 +26,32 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                     DecoGroupState.ResetRenderState();
                     return;
                 }
+
+                // 原版方法体末尾：adjustRect 时对"过滤结果的第一个"请求滚动（RefreshScrollRectPosition，r148 IL 已核），
+                // 下一帧 LateUpdate → AdjustItemListScrollRect(LevelEvent)。那个事件是**分组重排之前**的第一个，
+                // 可能落在折叠组里 ⇒ 我们的 AdjustScrollByEventPatch 会把组展开（"打字搜索自动展开折叠组"）。
+                // 这里记下它，重排后把请求改成"分组后的第一行"；一行都没有（全折叠）就撤销这次请求。
+                List<LevelEvent> filtered = adjustRect ? __instance.Get<List<LevelEvent>>("filteredEvents") : null;
+                LevelEvent searchScrollTarget = filtered != null && filtered.Count > 0 ? filtered[0] : null;
+
                 DecoGroupRenderer.Build(__instance);
+
+                if (searchScrollTarget != null && ___applyRefreshScrollRect
+                    && ReferenceEquals(___cacheEventForRectAdjust, searchScrollTarget)
+                    && DecoGroupState.Slots.Count > 0)
+                {
+                    // Build 原地重排 filteredEvents（同一个 List），此时它只含可见行
+                    List<LevelEvent> rows = __instance.Get<List<LevelEvent>>("filteredEvents");
+                    if (rows != null && rows.Count > 0)
+                    {
+                        ___cacheEventForRectAdjust = rows[0];
+                    }
+                    else
+                    {
+                        ___applyRefreshScrollRect = false;
+                        ___cacheEventForRectAdjust = null;
+                    }
+                }
             }
         }
 
@@ -39,8 +67,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                     return true;
                 if (DecoGroupState.Slots.Count == 0)
                     return true;
-                DecoGroupRenderer.ApplyUpdateList(__instance, forceRefreshAll);
-                return false;
+                // 渲染不了（itemHeight 读不到等）就落回原版：宁可没有组头，也别把列表画空
+                return !DecoGroupRenderer.ApplyUpdateList(__instance, forceRefreshAll);
             }
         }
 
@@ -56,7 +84,11 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             }
         }
 
-        /// <summary>滚动到指定装饰前：目标在折叠组里就先展开（否则它在 filteredEvents 里找不到，定位会落空）。</summary>
+        /// <summary>
+        /// 滚动到指定装饰前：目标在折叠组里就先展开（否则它在 filteredEvents 里找不到，定位会落空）。
+        /// 只剩"明确指向某个装饰"的请求会走到这里（选中 / 粘贴等）：搜索框打字触发的那一次
+        /// 已在 FilterSearchResultsPatch 里改成分组后的第一行，不会再把折叠组撑开。
+        /// </summary>
         [HarmonyPatch(typeof(PropertyControl_List), "AdjustItemListScrollRect", new Type[] { typeof(LevelEvent) })]
         internal static class AdjustScrollByEventPatch
         {
@@ -98,6 +130,20 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 decorationIndex = map[decorationIndex];
                 return true;
             }
+
+            /// <summary>
+            /// 原版方法体第一句把内容高度设成 `itemHeight * filteredEvents.Count`（只算行、不算组头，r148 IL 已核），
+            /// 紧接着 ScrollTo 槽位下标 ⇒ 高度不够时 ScrollRect 会把位置夹回去，滚动停在目标前面。
+            /// 这里在同一帧里马上把高度改回"槽位数 × 行高"（与我们的 ApplyUpdateList 一致）。
+            /// </summary>
+            internal static void Postfix(PropertyControl_List __instance)
+            {
+                if (!(__instance is PropertyControl_DecorationsList))
+                    return;
+                if (!Main.IsDecoGroupingEnabled)
+                    return;
+                DecoGroupRenderer.RestoreContentHeight(__instance);
+            }
         }
 
         /// <summary>
@@ -128,9 +174,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             {
                 DecoGroupRenderer.ResetStaticState();
                 DecoGroupRenderer.SyncReorderable(__instance);
-                // "写入关卡文件"关闭时：把 data 里我们的归属键剥离干净（保存出来的 .adofai 不含它们）
-                if (!Main.WriteGroupConfig)
-                    DecoGroupState.PurgeWrittenKeys();
+                // 归属键一直留在关卡 data 里（撤销/重做跟着走）；"写入关卡文件"关闭时只是保存输出里不写它们
+                // （由 LevelEvent.Encode 后置补丁剥离），这里不再动 data。
                 // 面板底部工具栏里挂一个“分组方式”按钮（原版按钮 prefab + 版本风格文字）
                 DecoGroupModeButton.Attach(__instance);
             }

@@ -119,8 +119,10 @@
     <Compile Include="PropertyCollection\Property_Button.cs" />
     <Compile Include="PropertyCollection\Property_Enum.cs" />
     <Compile Include="PropertyCollection\Property_InputField.cs" />
+    <Compile Include="Settings\SettingsStore.cs" />
     <Compile Include="Startup.cs" />
     <Compile Include="Utils\LevelEventEX.cs" />
+    <Compile Include="Utils\Pacl2Compat.cs" />
     <Compile Include="Utils\Popup.cs" />
     <Compile Include="Utils\Reflections.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

@@ -40,10 +40,31 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
     {
         internal string GroupKey;
 
-        internal void OnArrow() => DecoGroupActions.ToggleCollapse(GroupKey);
-        internal void OnName() => DecoGroupActions.SelectGroupAndShowPanel(GroupKey);
-        internal void OnEye() => DecoGroupActions.ToggleVisible(GroupKey);
-        internal void OnLock() => DecoGroupActions.ToggleLock(GroupKey);
+        // 模组在 UMM 里被关掉、但编辑器没能重启（用户在"未保存"提示里取消）时补丁已经卸了，
+        // 这些残留的按钮回调不能再动数据 ⇒ 一律先看 Main.IsEnabled。
+        internal void OnArrow()
+        {
+            if (Main.IsEnabled)
+                DecoGroupActions.ToggleCollapse(GroupKey);
+        }
+
+        internal void OnName()
+        {
+            if (Main.IsEnabled)
+                DecoGroupActions.SelectGroupAndShowPanel(GroupKey);
+        }
+
+        internal void OnEye()
+        {
+            if (Main.IsEnabled)
+                DecoGroupActions.ToggleVisible(GroupKey);
+        }
+
+        internal void OnLock()
+        {
+            if (Main.IsEnabled)
+                DecoGroupActions.ToggleLock(GroupKey);
+        }
     }
 
     /// <summary>头行上的点击目标（箭头 / 组名），点击后消费事件避免冒泡到标签页。</summary>
@@ -54,6 +75,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
         public void OnPointerClick(PointerEventData eventData)
         {
+            if (!Main.IsEnabled)
+                return;   // 模组已关闭（补丁已卸）：残留的头行不再响应，也不吞事件
             eventData?.Use();
             if (Owner == null)
                 return;
@@ -72,9 +95,19 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
     /// </summary>
     internal static class DecoGroupRenderer
     {
-        // 折叠标记（用转义写，避免源文件编码影响字形）
-        private const string ExpandedMark = "\u25BE";   // ▾
-        private const string CollapsedMark = "\u25B8";  // ▸
+        // 折叠标记（用转义写，避免源文件编码影响字形）。
+        // 首选 ▾/▸（U+25BE/U+25B8），但游戏字体不一定有这两个码位（v2 实测 CJK 字体都没有），
+        // TMP 遇到缺字不报错、直接画一个方框。所以 CreateArrow 里按字体自检：有就用首选，
+        // 没有就回退到 ▼/▶（U+25BC/U+25B6，覆盖面广得多）。
+        private const string PreferredExpandedMark = "\u25BE";   // ▾
+        private const string PreferredCollapsedMark = "\u25B8";  // ▸
+        private const string ExpandedMark = "\u25BC";             // ▼
+        private const string CollapsedMark = "\u25B6";            // ▶
+
+        /// <summary>当前字体自检后的实际字形（由 <see cref="ResolveArrowMarks"/> 填，默认就是回退字形）。</summary>
+        private static string resolvedExpandedMark = ExpandedMark;
+        private static string resolvedCollapsedMark = CollapsedMark;
+        private static TMP_FontAsset resolvedMarkFont;
 
         private const float ArrowWidth = 22f;
 
@@ -99,21 +132,75 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
         // ---------------------------------------------------------------- 静态状态重置
 
-        /// <summary>编辑器（重新）加载：头行与面板引用随场景销毁，池必须清空。</summary>
+        /// <summary>
+        /// 编辑器（重新）加载：头行与面板引用随场景销毁，池必须清空。
+        /// 也由 StopMod 调用（此时 Main.IsEnabled 已是 false、补丁已卸）：编辑器可能没能重启
+        /// （用户取消了"未保存"提示），场景里的头行/按钮都还在 ⇒ 先把它们拆掉、恢复原版列表。
+        /// </summary>
         internal static void ResetStaticState()
         {
+            if (!Main.IsEnabled)
+                TearDownLiveObjects();
             headerPool.Clear();
             activeHeaders.Clear();
             usedHeaderKeys.Clear();
             headerHolder = null;
             cachedCanvas = null;
             iconsCached = false;
+            resolvedMarkFont = null;
+            resolvedExpandedMark = ExpandedMark;
+            resolvedCollapsedMark = CollapsedMark;
             eyeOpenSprite = eyeClosedSprite = lockOpenSprite = lockClosedSprite = null;
             dropLine = null;
             cursorMark = null;
             highlightedRow = null;
             dropObjectsResolved = false;
             DecoGroupState.ResetRenderState();
+        }
+
+        /// <summary>
+        /// 模组被关掉而编辑器还活着：销毁我们建的头行/落点线/分组方式按钮，恢复原版拖拽重排，
+        /// 并让原版把列表重建一遍（补丁此时已卸，FilterSearchResults/ApplyUpdateList 都是原版的）。
+        /// 头行要先摘出 contentRT 再 Destroy：Destroy 是帧末才生效，还挂在 contentRT 下的话会被
+        /// 原版 ClearShownItems 塞进 ListItemPool，池里就多了一个即将被销毁的对象。
+        /// </summary>
+        private static void TearDownLiveObjects()
+        {
+            try
+            {
+                PropertyControl_DecorationsList panel = FindPanel();
+                var headers = new List<HeaderRow>(headerPool);
+                headers.AddRange(activeHeaders.Values);
+                foreach (HeaderRow header in headers)
+                    DestroyDetached(header != null ? header.GameObject : null);
+                DestroyDetached(headerHolder != null ? headerHolder.gameObject : null);
+                DestroyDetached(dropLine != null ? dropLine.gameObject : null);
+                DestroyDetached(cursorMark != null ? cursorMark.gameObject : null);
+                if (highlightedRow != null)
+                    highlightedRow.ShowHighlight(false);
+                DecoGroupModeButton.Detach();
+
+                if (panel != null)
+                {
+                    panel.itemsReorderable = true;
+                    string search = panel.searchField != null ? panel.searchField.text : "";
+                    panel.Method("FilterSearchResults", new object[] { search, false });
+                    panel.RefreshItemsList(true);
+                }
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("关闭模组时清理装饰栏分组对象失败: " + e.Message);
+            }
+        }
+
+        private static void DestroyDetached(GameObject go)
+        {
+            if (go == null)
+                return;
+            go.SetActive(false);
+            go.transform.SetParent(null, false);
+            UnityEngine.Object.Destroy(go);
         }
 
         // ---------------------------------------------------------------- 分组构建
@@ -235,8 +322,12 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                         continue;
                     if (byTag)
                     {
+                        // tag 命中某个自定义分组的装饰按规则属于那个自定义分组，不属于任何标签组
                         string t = GetTag(e);
-                        decoAutoKeys.Add(t.Length == 0 ? "tag:" : "tag:" + t);
+                        if (t.Length == 0)
+                            decoAutoKeys.Add("tag:");
+                        else if (MatchCustomGroup(customGroups, t) < 0)
+                            decoAutoKeys.Add("tag:" + t);
                     }
                     else
                     {
@@ -265,6 +356,26 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 AddAutoBucket(autoOrder, autoByKey, "type:58", L("aee.group.type.object"));
                 AddAutoBucket(autoOrder, autoByKey, "type:62", L("aee.group.type.particle"));
                 AddAutoBucket(autoOrder, autoByKey, "type:other", L("aee.group.other"));
+            }
+            else
+            {
+                // 按标签：与按类型同理，**先**把"按规则有人属于"的桶都建出来（下面的循环只往里放）。
+                // 以前是遇到第一个成员才懒建 ⇒ 成员全被手动拖进自定义分组后桶根本不存在，
+                // 空桶保留规则无从生效：「未分组」整组消失、单成员的标签组拖不回去。
+                foreach (string key in decoAutoKeys)
+                {
+                    if (key == "tag:")
+                    {
+                        untagged = new GroupBucket { Key = "tag:", Label = L("aee.group.untagged") };
+                        continue;
+                    }
+                    string tag = key.Substring(4);   // 与下面懒建时一致：autoByKey 按裸 tag 索引
+                    if (autoByKey.ContainsKey(tag))
+                        continue;
+                    var bucket = new GroupBucket { Key = key, Label = tag };
+                    autoByKey[tag] = bucket;
+                    autoOrder.Add(bucket);
+                }
             }
 
             foreach (LevelEvent e in events)
@@ -340,6 +451,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
             // 自动分组的空桶：只要"还有装饰按规则属于它"就保留（组头仍在、显示 (0)），
             // 这样它继续是有效落点；真正没人属于的自动组（例如全场没有图片装饰）才剔除。
+            // 按类型 / 按标签的桶都已预先建好，所以这条规则对两种模式都生效。
             foreach (GroupBucket bucket in autoOrder)
             {
                 if (bucket.Events.Count == 0 && decoAutoKeys.Contains(bucket.Key))
@@ -394,18 +506,24 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
         /// <summary>
         /// 照 reverse/scratch/grp/il_ApplyUpdateList.txt 复制原版方法体，只把 filteredEvents[i] 换成槽位。
+        /// 返回 false = 这次渲染不了（取不到 shownItems / itemHeight 无效等），调用方应落回原版方法体，
+        /// 否则列表会整个空掉。
         /// </summary>
-        internal static void ApplyUpdateList(PropertyControl_List list, bool forceRefreshAll)
+        internal static bool ApplyUpdateList(PropertyControl_List list, bool forceRefreshAll)
         {
             List<DecoGroupSlot> slots = DecoGroupState.Slots;
-            if (slots.Count == 0)
-                return;
+            if (slots.Count == 0 || list == null)
+                return false;
 
-            List<ListItem> shownItems = list.Get<List<ListItem>>("shownItems");
-            List<ListItem> toRemove = list.Get<List<ListItem>>("toRemove");
+            List<ListItem> shownItems = GetShownItems(list);
+            List<ListItem> toRemove = GetToRemove(list);
             float itemHeight = ItemHeight;
-            if (shownItems == null || toRemove == null || list.contentRT == null || itemHeight <= 0f)
-                return;
+            if (shownItems == null || toRemove == null || list.contentRT == null || list.viewportRect == null || itemHeight <= 0f)
+            {
+                // 落回原版之前把头行收回自建池：原版不认识它们，留在 contentRT 里会叠在行上
+                DetachHeaders();
+                return false;
+            }
 
             if (forceRefreshAll)
             {
@@ -501,6 +619,57 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             ReleaseUnusedHeaders();
             list.Set("applyUpdateList", false);
             list.Set("shouldUpdateForce", false);
+            return true;
+        }
+
+        /// <summary>内容高度改回"槽位数 × 行高"（原版 AdjustItemListScrollRect(int) 会先把它设成只算行的高度）。</summary>
+        internal static void RestoreContentHeight(PropertyControl_List list)
+        {
+            int count = DecoGroupState.Slots.Count;
+            float itemHeight = ItemHeight;
+            if (list == null || list.contentRT == null || count == 0 || itemHeight <= 0f)
+                return;
+            scrMisc.SizeDeltaY(list.contentRT, itemHeight * count);
+        }
+
+        // shownItems / toRemove 是 PropertyControl_List 的 protected 字段；渲染与拖拽反馈每帧都要读，
+        // 用 Harmony 的强类型字段引用（没有 DynamicInvoke 开销），解析失败才退回通用反射。
+        private static AccessTools.FieldRef<PropertyControl_List, List<ListItem>> shownItemsRef;
+        private static AccessTools.FieldRef<PropertyControl_List, List<ListItem>> toRemoveRef;
+        private static bool listFieldRefsResolved;
+
+        private static void ResolveListFieldRefs()
+        {
+            if (listFieldRefsResolved)
+                return;
+            listFieldRefsResolved = true;
+            try
+            {
+                shownItemsRef = AccessTools.FieldRefAccess<PropertyControl_List, List<ListItem>>("shownItems");
+                toRemoveRef = AccessTools.FieldRefAccess<PropertyControl_List, List<ListItem>>("toRemove");
+            }
+            catch (Exception e)
+            {
+                shownItemsRef = null;
+                toRemoveRef = null;
+                Main.Logger?.Log("装饰列表字段引用解析失败，退回反射读取: " + e.Message);
+            }
+        }
+
+        private static List<ListItem> GetShownItems(PropertyControl_List list)
+        {
+            if (list == null)
+                return null;
+            ResolveListFieldRefs();
+            return shownItemsRef != null ? shownItemsRef(list) : list.Get<List<ListItem>>("shownItems");
+        }
+
+        private static List<ListItem> GetToRemove(PropertyControl_List list)
+        {
+            if (list == null)
+                return null;
+            ResolveListFieldRefs();
+            return toRemoveRef != null ? toRemoveRef(list) : list.Get<List<ListItem>>("toRemove");
         }
 
         /// <summary>原版 IsItemVisible(Int32/RectTransform)：itemY 是行的相对 Y（行自身 anchoredPosition.y 或 -i*itemHeight）。</summary>
@@ -513,12 +682,23 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             return num > -viewportHeight;
         }
 
+        /// <summary>PropertyControl_List.itemHeight（静态字段）的反射句柄：只解析一次，值每次现读（原版可能在 Start 里改它）。</summary>
+        private static System.Reflection.FieldInfo itemHeightField;
+        private static bool itemHeightFieldResolved;
+
         internal static float ItemHeight
         {
             get
             {
                 try
                 {
+                    if (!itemHeightFieldResolved)
+                    {
+                        itemHeightFieldResolved = true;
+                        itemHeightField = AccessTools.Field(typeof(PropertyControl_List), "itemHeight");
+                    }
+                    if (itemHeightField != null)
+                        return Convert.ToSingle(itemHeightField.GetValue(null));
                     return typeof(PropertyControl_List).Get<float>("itemHeight");
                 }
                 catch
@@ -545,7 +725,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
             bool collapsed = DecoGroupState.CollapsedGroups.Contains(slot.Key);
             if (header.Arrow != null)
-                header.Arrow.text = collapsed ? CollapsedMark : ExpandedMark;
+                header.Arrow.text = collapsed ? resolvedCollapsedMark : resolvedExpandedMark;
             if (header.Label != null)
                 header.Label.text = slot.Label + (Main.ShowGroupCounts ? " (" + slot.Count + ")" : "");
 
@@ -759,11 +939,39 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             text.alignment = TextAlignmentOptions.Left;
             text.textWrappingMode = TextWrappingModes.NoWrap;
             text.raycastTarget = true;
+            // 先按这行实际用的字体定好字形，组头刷新文本时直接取（缺字会画成方框）
+            ResolveArrowMarks(text.font);
 
             GroupHeaderClickTarget target = go.AddComponent<GroupHeaderClickTarget>();
             target.Owner = marker;
             target.Area = GroupHitArea.Arrow;
             return text;
+        }
+
+        /// <summary>同一字体只自检一次（每次建行可能涉及几十个组头）。</summary>
+        private static void ResolveArrowMarks(TMP_FontAsset font)
+        {
+            if (font == null || ReferenceEquals(font, resolvedMarkFont))
+                return;
+            resolvedMarkFont = font;
+            resolvedExpandedMark = PickArrowMark(font, PreferredExpandedMark, ExpandedMark);
+            resolvedCollapsedMark = PickArrowMark(font, PreferredCollapsedMark, CollapsedMark);
+        }
+
+        /// <summary>字体里有首选码位就用它，否则回退（以后字体再变，最多退化观感，不会出方框）。</summary>
+        private static string PickArrowMark(TMP_FontAsset font, string preferred, string fallback)
+        {
+            try
+            {
+                // r148 的 TMP 签名（反射已核）：HasCharacter(char character, bool includeFallbacks, bool searchActiveCharacterTableOnly)
+                if (font.HasCharacter(preferred[0], true, false))
+                    return preferred;
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("检测箭头字形失败，按回退字形处理: " + e.Message);
+            }
+            return fallback;
         }
 
         /// <summary>组名是拉伸锚点时给它左边让出箭头的宽度（不是拉伸锚点就不动，避免破坏原版布局）。</summary>
@@ -813,9 +1021,13 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             usedHeaderKeys.Clear();
         }
 
+        /// <summary>ReleaseUnusedHeaders 的复用缓冲（每次渲染都会调，避免每帧 new 一个 List）。</summary>
+        private static readonly List<string> staleHeaderKeys = new List<string>();
+
         private static void ReleaseUnusedHeaders()
         {
-            List<string> stale = new List<string>();
+            List<string> stale = staleHeaderKeys;
+            stale.Clear();
             foreach (KeyValuePair<string, HeaderRow> pair in activeHeaders)
             {
                 if (!usedHeaderKeys.Contains(pair.Key))
@@ -829,6 +1041,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                     ParkHeader(header);
                 activeHeaders.Remove(key);
             }
+            stale.Clear();
         }
 
         private static void ParkHeader(HeaderRow header)
@@ -894,7 +1107,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             if (!RectTransformUtility.RectangleContainsScreenPoint(panel.viewportRect, screenPosition, camera))
                 return false;
 
-            List<ListItem> shownItems = panel.Get<List<ListItem>>("shownItems");
+            List<ListItem> shownItems = GetShownItems(panel);
             if (shownItems == null)
                 return false;
             for (int i = 0; i < shownItems.Count; i++)
@@ -1010,7 +1223,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             if (rect == null)
                 return null;
             PropertyControl_DecorationsList panel = FindPanel();
-            List<ListItem> shownItems = panel != null ? panel.Get<List<ListItem>>("shownItems") : null;
+            List<ListItem> shownItems = GetShownItems(panel);
             if (shownItems == null)
                 return null;
             for (int i = 0; i < shownItems.Count; i++)
@@ -1026,7 +1239,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             if (e == null)
                 return false;
             PropertyControl_DecorationsList panel = FindPanel();
-            List<ListItem> shownItems = panel != null ? panel.Get<List<ListItem>>("shownItems") : null;
+            List<ListItem> shownItems = GetShownItems(panel);
             if (shownItems == null)
                 return false;
             for (int i = 0; i < shownItems.Count; i++)
@@ -1052,12 +1265,13 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 return target.Before ? TryGetTopEdge(hoveredRect, out worldY) : TryGetBottomEdge(hoveredRect, out worldY);
             }
 
-            // 组头：插到组尾 ⇒ "下一组第一行"的上沿；没有下一行就取本组最后一个成员的下沿
-            LevelEvent next = DecoGroupState.NextEventAfterGroup(target.Key);
-            if (next != null && TryGetShownRect(next, out RectTransform nextRect) && TryGetTopEdge(nextRect, out worldY))
-                return true;
+            // 组头：插到组尾 ⇒ 本组最后一个成员的下沿（与 DropDecoration 的锚点一致）；
+            // 它不在视野里就取"下一组第一行"的上沿（显示上是同一个位置）
             LevelEvent last = DecoGroupState.LastEventOfGroup(target.Key);
             if (last != null && TryGetShownRect(last, out RectTransform lastRect) && TryGetBottomEdge(lastRect, out worldY))
+                return true;
+            LevelEvent next = DecoGroupState.NextEventAfterGroup(target.Key);
+            if (next != null && TryGetShownRect(next, out RectTransform nextRect) && TryGetTopEdge(nextRect, out worldY))
                 return true;
             // 组内没有可见成员（空组 / 全部滚出视野）：退回组头下沿
             return TryGetBottomEdge(hoveredRect, out worldY);
@@ -1184,13 +1398,16 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             return rect;
         }
 
+        /// <summary>GetWorldCorners 的复用缓冲（拖动时每帧要算好几次，只在主线程用）。</summary>
+        private static readonly Vector3[] cornersBuffer = new Vector3[4];
+
         /// <summary>矩形的世界上下沿（用世界四角算，不依赖 pivot 怎么设的）。</summary>
         private static bool TryGetWorldRange(RectTransform rect, out float topWorldY, out float bottomWorldY)
         {
             topWorldY = bottomWorldY = 0f;
             if (rect == null)
                 return false;
-            var corners = new Vector3[4];
+            Vector3[] corners = cornersBuffer;
             rect.GetWorldCorners(corners);   // 0=左下 1=左上 2=右上 3=右下
             bottomWorldY = (corners[0].y + corners[3].y) * 0.5f;
             topWorldY = (corners[1].y + corners[2].y) * 0.5f;
@@ -1296,14 +1513,14 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             }
         }
 
-        /// <summary>分组开启时必须禁用拖拽重排（EndDrag 的第一道检查），关闭时恢复。</summary>
+        /// <summary>分组开启时必须禁用拖拽重排（EndDrag 的第一道检查），关闭时（含模组被关掉）恢复。</summary>
         internal static void SyncReorderable(PropertyControl_DecorationsList panel)
         {
             if (panel == null)
                 panel = FindPanel();
             if (panel == null)
                 return;
-            panel.itemsReorderable = !Main.IsDecoGroupingEnabled;
+            panel.itemsReorderable = !Main.IsEnabled || !Main.IsDecoGroupingEnabled;
         }
 
         /// <summary>原版 AdjustItemListScrollRect 结尾的收尾（跳过原版方法体时得自己清，避免每帧重试）。</summary>

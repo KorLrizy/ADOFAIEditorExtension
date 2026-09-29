@@ -17,6 +17,12 @@
     "ChineseTraditional": "ADOFAI Editor Extension 已停用",
     "Korean": "ADOFAI Editor Extension 비활성화됨"
   },
+  "aee.reopenEditor": {
+    "English": "The editor was not restarted. Save the level and reopen the editor to fully apply the ADOFAI Editor Extension toggle.",
+    "ChineseSimplified": "编辑器没有重启：请保存关卡后重新打开编辑器，ADOFAI Editor Extension 的开关才会完全生效。",
+    "ChineseTraditional": "編輯器沒有重新啟動：請儲存關卡後重新開啟編輯器，ADOFAI Editor Extension 的開關才會完全生效。",
+    "Korean": "에디터가 다시 시작되지 않았습니다. 레벨을 저장한 뒤 에디터를 다시 열어야 ADOFAI Editor Extension 설정이 완전히 적용됩니다."
+  },
   "aee.decoGroupingEnabled": {
     "English": "Group decorations list",
     "ChineseSimplified": "装饰栏分组",
@@ -251,7 +257,7 @@
     "ChineseTraditional": "事件備註",
     "Korean": "이벤트 메모"
   },
-  "editor.aee.note.help": {
+  "editor.aeeNote.help": {
     "English": "A note for this event. It is stored in the level file (key aeeNote) and shown on the right side of the event row in the pager jump list; hover that row to read the whole note. The base game ignores the extra key, but a save made without this mod drops it.",
     "ChineseSimplified": "给这个事件写一条备注。备注会写进关卡文件（键名 aeeNote），并显示在分页器直选列表里事件行的右侧，鼠标悬停可看完整内容。原版会忽略这个额外键，但用无 mod 的原版保存一次就会把它丢掉。",
     "ChineseTraditional": "給這個事件寫一條備註。備註會寫進關卡檔案（鍵名 aeeNote），並顯示在分頁器直選清單裡事件列的右側，滑鼠懸停可看完整內容。原版會忽略這個額外鍵，但用無 mod 的原版儲存一次就會把它丟掉。",

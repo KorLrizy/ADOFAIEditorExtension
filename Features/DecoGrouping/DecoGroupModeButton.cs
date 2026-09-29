@@ -114,8 +114,21 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             label = null;
         }
 
+        /// <summary>模组被关掉而编辑器还活着（没能重启）：把按钮从工具栏里拿掉。</summary>
+        internal static void Detach()
+        {
+            if (buttonRoot != null)
+            {
+                buttonRoot.SetActive(false);
+                UnityEngine.Object.Destroy(buttonRoot);
+            }
+            Reset();
+        }
+
         private static void Cycle()
         {
+            if (!Main.IsEnabled)
+                return;   // 模组已关闭（补丁已卸）：残留按钮不再改设置
             switch (Main.CurrentGroupingMode)
             {
                 case Main.GroupingMode.ByType:

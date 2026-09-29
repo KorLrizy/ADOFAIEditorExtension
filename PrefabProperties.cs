@@ -92,7 +92,7 @@ namespace ADOFAIEditorExtension
                 ),
                 new Property_Button(
                     name: "addGroup",
-                    action: () => DecoGroupState.AddCustomGroup(DecoGroupState.EditingSet),
+                    action: () => RunGroupAction(() => DecoGroupState.AddCustomGroup(DecoGroupState.EditingSet)),
                     key: "aee.group.add"
                 )
             };
@@ -115,7 +115,7 @@ namespace ADOFAIEditorExtension
                 ));
                 properties.Add(new Property_Button(
                     name: DecoGroupState.DeleteKey(DecoGroupState.GroupSet.Decoration, index),
-                    action: () => DecoGroupState.DeleteCustomGroup(DecoGroupState.GroupSet.Decoration, index),
+                    action: () => RunGroupAction(() => DecoGroupState.DeleteCustomGroup(DecoGroupState.GroupSet.Decoration, index)),
                     key: DeleteLabelKey(index)
                 ));
             }
@@ -138,7 +138,7 @@ namespace ADOFAIEditorExtension
                 ));
                 properties.Add(new Property_Button(
                     name: EventDeleteKey(index),
-                    action: () => DecoGroupState.DeleteCustomGroup(DecoGroupState.GroupSet.Event, index),
+                    action: () => RunGroupAction(() => DecoGroupState.DeleteCustomGroup(DecoGroupState.GroupSet.Event, index)),
                     key: DeleteLabelKey(index)
                 ));
             }
@@ -172,6 +172,25 @@ namespace ADOFAIEditorExtension
                 list.Add(DecoGroupState.DeleteKey(DecoGroupState.GroupSet.Decoration, i));
             }
             return list;
+        }
+
+        /// <summary>
+        /// 面板按钮（添加 / 删除分组）的统一入口：模组已禁用（编辑器还没重启、按钮还残留在面板上）时什么都不做；
+        /// 否则执行后把行数变化落盘（Save 幂等，内容没变不写）。按钮回调由原版 UI 触发，异常不许漏出去。
+        /// </summary>
+        private static void RunGroupAction(Action action)
+        {
+            if (!Main.IsEnabled)
+                return;
+            try
+            {
+                action();
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("分组按钮操作失败: " + e);
+            }
+            Settings.SettingsStore.Save();
         }
 
         /// <summary>

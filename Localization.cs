@@ -10,15 +10,35 @@ namespace ADOFAIEditorExtension
     {
         Dictionary<string, Dictionary<SystemLanguage, string>> localization;
 
+        /// <summary>
+        /// 读取本地化表。文件缺失 / JSON 损坏 / 反序列化为 null 时只记日志、保持空表，
+        /// 不能抛出去——构造发生在 Main.Setup 里，抛异常会让整个模组加载失败（界面文字退化成键名总好过没有模组）。
+        /// </summary>
         public Localization(string jsonFile)
         {
-            string jsonString = File.ReadAllText(jsonFile);
-
-            var raw = JsonConvert.DeserializeObject<Dictionary<string, Dictionary<string, string>>>(jsonString);
             localization = new Dictionary<string, Dictionary<SystemLanguage, string>>();
+
+            Dictionary<string, Dictionary<string, string>> raw;
+            try
+            {
+                string jsonString = File.ReadAllText(jsonFile);
+                raw = JsonConvert.DeserializeObject<Dictionary<string, Dictionary<string, string>>>(jsonString);
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log($"警告: 读取本地化文件失败 {jsonFile}: {e.Message}");
+                return;
+            }
+            if (raw == null)
+            {
+                Main.Logger?.Log($"警告: 本地化文件为空或格式不对 {jsonFile}");
+                return;
+            }
 
             foreach (var outer in raw)
             {
+                if (outer.Key == null || outer.Value == null)
+                    continue;
                 var innerDict = new Dictionary<SystemLanguage, string>();
 
                 foreach (var inner in outer.Value)
@@ -29,7 +49,7 @@ namespace ADOFAIEditorExtension
                     }
                     else
                     {
-                        Main.Logger.Log($"警告: 未识别语言 {inner.Key}");
+                        Main.Logger?.Log($"警告: 未识别语言 {inner.Key}");
                     }
                 }
 

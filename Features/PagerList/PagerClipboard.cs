@@ -69,6 +69,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
         private static readonly List<Bind> cachedBinds = new List<Bind>();
         private static bool cacheValid;
 
+        /// <summary>键类型不是 `EditorKeybind` 时的反射兜底缓存（见 <see cref="IsPressed"/>）。</summary>
+        private static readonly Dictionary<Type, MethodInfo> isPressedMethods = new Dictionary<Type, MethodInfo>();
+
         // "PACL2 的复制提示会不会响"的判定缓存（每次打开弹窗重判，见 InvalidateCache）
         private static bool pacl2Checked;
         private static bool pacl2ToastsCopy;
@@ -84,20 +87,24 @@ namespace ADOFAIEditorExtension.Features.PagerList
             pacl2Checked = false;
         }
 
-        /// <summary>由 `scnEditor.HandleKeyboardActions` 的前缀补丁每帧调用一次。</summary>
-        internal static void HandleKeybinds()
+        /// <summary>
+        /// 由 `scnEditor.HandleKeyboardActions` 的前缀补丁每帧调用一次。
+        /// 返回 true = 这一帧我们接手执行了某条键位 ⇒ 前缀要跳过原版方法体：我们的处理可能顺手把弹窗关掉
+        /// （剪切后不足 2 行），原版随后看到 `showingPopup == false` 就会把同一次按键再执行一遍。
+        /// </summary>
+        internal static bool HandleKeybinds()
         {
             if (!PagerListController.IsPopupOpen)
-                return;
+                return false;
             scnEditor editor = scnEditor.instance;
             if (editor == null)
-                return;
+                return false;
             // 弹窗确实把原版快捷键挡住了（showingPopup）才由我们接手；否则原版自己会处理，
             // 我们再来一遍就会重复执行（粘贴尤其不能重复）。
             // 注意用"非泛型 Get + is 判断"而不是 Get<bool>()：Reflections.Get<T> 在成员缺失时
             // 返回 null，往值类型上转会直接 NRE（§25.1 的教训）。
             if (!(editor.Get("showingPopup") is bool showing) || !showing)
-                return;
+                return false;
 
             EnsureCache(editor);
             for (int i = 0; i < cachedBinds.Count; i++)
@@ -106,8 +113,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     continue;
                 // 与原版 ExecutePressedActions 一致：一帧只执行第一组按下的键位
                 HandleActions(editor, cachedBinds[i].Actions);
-                return;
+                return true;
             }
+            return false;
         }
 
         private static void EnsureCache(scnEditor editor)
@@ -215,6 +223,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             {
                 // 单选：原版的"选中的事件"就是面板里那个事件，与我们列表当前行一致 ⇒ 直接复用原版 action
                 // （剪切的收尾会 ShowTabsForFloor/ShowPanel ⇒ 先压住"面板切换就关窗"）
+                // 提示里的个数与原版实际处理的一致：全部同类 = 当前砖上该类型的事件数（原版 CopyOfFloor 同口径）
                 int affected = allSameType ? CollectSameTypeEvents(editor, selected).Count : 1;
                 PagerListController.SuppressAutoClose();
                 Run(editor, action);
@@ -507,25 +516,47 @@ namespace ADOFAIEditorExtension.Features.PagerList
 
         /// <summary>
         /// 剪切：把选中的事件从关卡里删掉。整套动作与原版 `CutFloor` 的收尾一致
-        /// （`RemoveEvents` → `ApplyEventsToFloors` → `ShowTabsForFloor` → `ShowEventIndicators`，
-        /// 全在一个 `SaveStateScope(editor, false, true, false)` 里 ⇒ 一步撤销）。
+        /// （`RemoveEvents` → `ApplyEventsToFloors` → `ShowTabsForFloor` → `ShowEventIndicators`
+        /// ⇒ 一步撤销）。
+        ///
+        /// PACL2 例外（§43，IL 已核）：BetterUndoRedo 生效时**不能**再套原版 `SaveStateScope` ——
+        /// 它会把 `changingState` 抬到 1，使 PACL2 在 `scnEditor.RemoveEvents` 替换体里建的那个
+        /// `EventsChangeScope(events, Mode.Remove)`（唯一记住"每个事件被删时的真实下标"的东西）**不压撤销点**，
+        /// 只剩 PACL2 的兜底 `DefaultLevelState`（Undo 只会 `editor.events.Add` 追加到数组末尾、不带下标 ⇒
+        /// 位置丢失，甚至因为它的记录开关 `currentState` 已经为 null 而什么都恢复不了 = 事件丢失）。
+        /// 所以这里先反射建 PACL2 自己的 scope（<see cref="Pacl2Compat.TryBeginEventsRemovalScope"/>），
+        /// 拿到就用它（删除本身还是走原版 `editor.RemoveEvents`，收尾不变）；拿不到才退回原版 scope，
+        /// 行为与以前逐字一致。
         /// </summary>
         private static void RemoveEvents(scnEditor editor, List<LevelEvent> events, int floorID)
         {
             if (events == null || events.Count == 0)
                 return;
-            using (new SaveStateScope(editor, false, true, false))
+            // scope 与删除必须用**同一批对象**：缓存里的下标就是构造 scope 那一刻算出来的
+            var toRemove = new List<LevelEvent>(events);
+            IDisposable pacl2Scope = Pacl2Compat.TryBeginEventsRemovalScope(toRemove);
+            if (pacl2Scope != null)
             {
-                editor.RemoveEvents(new List<LevelEvent>(events));
-                editor.ApplyEventsToFloors();
-
-                InspectorPanel panel = editor.levelEventsPanel;
-                if (panel != null && floorID >= 0)
-                    panel.ShowTabsForFloor(floorID);
-                scrFloor floor = FloorOf(editor, floorID);
-                if (floor != null)
-                    editor.ShowEventIndicators(floor);
+                using (pacl2Scope)
+                    CutEvents(editor, toRemove, floorID);
+                return;
             }
+            using (new SaveStateScope(editor, false, true, false))
+                CutEvents(editor, toRemove, floorID);
+        }
+
+        /// <summary>真正的删除 + 收尾（撤销点由调用方开，见 <see cref="RemoveEvents"/>）。</summary>
+        private static void CutEvents(scnEditor editor, List<LevelEvent> events, int floorID)
+        {
+            editor.RemoveEvents(events);
+            editor.ApplyEventsToFloors();
+
+            InspectorPanel panel = editor.levelEventsPanel;
+            if (panel != null && floorID >= 0)
+                panel.ShowTabsForFloor(floorID);
+            scrFloor floor = FloorOf(editor, floorID);
+            if (floor != null)
+                editor.ShowEventIndicators(floor);
         }
 
         /// <summary>复制目标砖：优先用原版选中砖（原版 action 也是这么取），退回事件自己的 floor。</summary>
@@ -543,15 +574,23 @@ namespace ADOFAIEditorExtension.Features.PagerList
             return -1;
         }
 
-        /// <summary>"复制/剪切全部同类事件"：该类型在整关里的所有事件（原版 allSameTypeEvents 分支同义）。</summary>
+        /// <summary>
+        /// "复制/剪切全部同类事件"：**当前砖上**该类型的所有事件 —— 与原版 `CopyOfFloor` 的 allSameTypeEvents
+        /// 分支同义（r148 原版：`e.floor == floor.seqID &amp;&amp; e.eventType == selectedEventType`），
+        /// 不是整关（以前按整关收，多选剪切会把别的砖上的同类事件一起删掉）。
+        /// 砖号口径与复制目标一致（<see cref="ResolveFloorID"/>）；取不到砖就返回空表。
+        /// </summary>
         private static List<LevelEvent> CollectSameTypeEvents(scnEditor editor, List<LevelEvent> selected)
         {
             var result = new List<LevelEvent>();
             if (selected == null || selected.Count == 0 || selected[0] == null)
                 return result;
             LevelEventType type = selected[0].eventType;
+            int floorID = ResolveFloorID(editor, selected);
+            if (floorID < 0)
+                return result;
             foreach (LevelEvent ev in AllEvents(editor))
-                if (ev != null && ev.eventType == type)
+                if (ev != null && ev.floor == floorID && ev.eventType == type)
                     result.Add(ev);
             return result;
         }
@@ -586,14 +625,26 @@ namespace ADOFAIEditorExtension.Features.PagerList
             }
         }
 
+        /// <summary>
+        /// 键位是否这一帧按下。弹窗开着时每帧对每条缓存键位都要调一次 ⇒ 不能每次 `GetMethod` + `Invoke`：
+        /// r148 的键就是公开结构体 `ADOFAI.Editor.EditorKeybind`（反射核过：`public struct`，`bool IsPressed()`），
+        /// 直接拆箱调用；万一类型对不上（别的版本/模组换了键类型）才退回反射，且 MethodInfo 按类型缓存。
+        /// </summary>
         private static bool IsPressed(object keybind)
         {
             if (keybind == null)
                 return false;
             try
             {
-                return keybind.GetType().GetMethod("IsPressed", Type.EmptyTypes) is MethodInfo m
-                    && (bool)m.Invoke(keybind, null);
+                if (keybind is ADOFAI.Editor.EditorKeybind bind)
+                    return bind.IsPressed();
+                Type type = keybind.GetType();
+                if (!isPressedMethods.TryGetValue(type, out MethodInfo m))
+                {
+                    m = type.GetMethod("IsPressed", Type.EmptyTypes);
+                    isPressedMethods[type] = m;
+                }
+                return m != null && m.Invoke(keybind, null) is bool pressed && pressed;
             }
             catch
             {

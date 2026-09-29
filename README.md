@@ -17,8 +17,8 @@
 - **组头操作**：组头行分成四块 `[箭头] [组名(数量)] [眼睛] [锁]` ——
   箭头折叠/展开；组名全选该组并在右侧打开原版多选属性面板（改一个属性 = 应用到组内全部装饰）；
   眼睛/锁整组切换可见与锁定（与原版逐行按钮同一套 API，不另造状态）。
-- **可选写入关卡**：手动归属可以只活在本次会话里，也可以写进关卡文件（键名 `aeeGroupDeco`），
-  默认不写入，见[注意事项](#注意事项与关卡兼容性)。
+- **可选写入关卡**：手动归属可以只活在本次会话里，也可以写进关卡文件（装饰键名 `aeeGroupDeco`、
+  事件键名 `aeeGroupEvent`），默认不写入，见[注意事项](#注意事项与关卡兼容性)。
 
 ### 事件分页器直选弹窗
 
@@ -48,9 +48,10 @@
 
 模组自带一个 UI 标签页（放在编辑器的原版标签页序列里），用于开关上述功能、选择默认分组方式、
 管理装饰 / 事件两套互相独立的自定义分组。实现上把本模组伪装成一个"设置型关卡事件"注入游戏原生设置面板，
-字段值存于该标签页自己的 `LevelEvent`，因此**同一进程内切换关卡设置不丢**。
+字段值存于该标签页自己的 `LevelEvent`，因此**同一进程内切换关卡设置不丢**；
+同时持久化到 mod 目录下的 `Settings.json`，**重启游戏后仍然保留**。
 设置项包括：装饰分组总开关、分组方式、组头是否显示数量、分页器直选列表开关、编辑目标（装饰分组 / 事件分组）、
-以及"把分组归属写进关卡文件"开关（默认关闭）。
+以及"把分组归属写进关卡文件"开关（默认关闭；只决定保存关卡时是否写入分组归属）。
 
 ## 环境要求
 
@@ -109,10 +110,11 @@ MSBuild ADOFAIEditorExtension.csproj -p:Configuration=Release -p:GameDir="D:\ste
 - 建议：**分享关卡前先在带 mod 的环境下存一份**；这些键属于扩展数据，不承担玩法逻辑，丢了只影响分组与备注显示。
 - **批量编辑本身不写入任何东西**——它只是把改动落到已有事件字段上。分组归属与备注的落盘统一由上面那个开关（默认关闭）
   与"备注非空"这两条控制，因此**默认配置下关卡文件与原版完全一致**。
-- 分页器直选列表是自建弹窗（克隆原版 `largeOkPopupContainer` + 自建 `ScrollRect`，行按钮克隆
-  `notificationOkButton`），因为原版 `ShowNotificationPopup` 的滚动高度按正文文本定死、且点选项不会关窗。
+- 分页器直选列表是自建弹窗（克隆原版 `okPopupContainer`（缺失时退回 `largeOkPopupContainer`）+ 自建 `ScrollRect`，
+  行克隆装饰列表自己的行 prefab `listItemPool.itemPrefab`），因为原版 `ShowNotificationPopup` 的滚动高度按正文文本定死、且点选项不会关窗。
   如果游戏更新改动了这些预制体，弹窗可能失效——遇到时请在 Issues 里附游戏版本号与复现步骤。
-- 设置项存于标签页自己的 `LevelEvent`，同一进程内跨关卡保留；**重启游戏后回到设置页里的默认值**。
+- 设置项存于标签页自己的 `LevelEvent`，同一进程内跨关卡保留；并持久化到 mod 目录下的 `Settings.json`
+  （用户数据，不随 mod 发布），**重启游戏后仍然保留**。删掉该文件即恢复默认值。
 
 ## 目录结构
 
@@ -130,6 +132,7 @@ ADOFAI Editor extension\
 │   ├── AutoGroupMode.cs           自动分组方式枚举
 │   └── GroupEditTarget.cs         设置页"编辑目标"两态枚举（装饰分组 / 事件分组）
 ├── PropertyCollection\            面板字段类型（Property 基类 + Bool/Enum/InputField/Button）
+├── Settings\SettingsStore.cs       模组设置持久化（mod 目录下的 Settings.json）
 ├── Utils\                         Reflections（私有成员访问）、LevelEventEX（UpdatePanel）、Popup
 ├── Patches\
 │   ├── EditorIntegrationPatches.cs   GCS 注入 / ShowPanel 接管 / 本地化与枚举键改写

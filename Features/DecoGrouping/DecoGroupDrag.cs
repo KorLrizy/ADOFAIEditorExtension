@@ -24,7 +24,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         public void OnBeginDrag(PointerEventData eventData)
         {
             dragging = null;
-            if (!Main.IsDecoGroupingEnabled)
+            // 模组已在 UMM 里关掉（补丁已卸、编辑器没能重启）：组件还挂在池化的行上，但不能再接管
+            if (!Main.IsEnabled || !Main.IsDecoGroupingEnabled)
                 return;   // 分组关闭：交给原版的排序拖拽
 
             ListItem item = GetComponent<ListItem>();
@@ -40,6 +41,13 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         {
             if (dragging == null)
                 return;
+            if (!Main.IsEnabled)
+            {
+                // 拖到一半模组被关掉：放弃这次拖动
+                dragging = null;
+                DecoGroupRenderer.ClearDropFeedback();
+                return;
+            }
             eventData?.Use();
             DecoGroupRenderer.UpdateDropFeedback(eventData != null ? eventData.position : Vector2.zero, dragging);
         }
@@ -49,6 +57,12 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             // dragging == null ⇒ 这次拖动不是我们接管的（分组关闭 / 没抓到行），一点都不要碰事件
             if (dragging == null)
                 return;
+            if (!Main.IsEnabled)
+            {
+                dragging = null;
+                DecoGroupRenderer.ClearDropFeedback();
+                return;
+            }
             eventData?.Use();
 
             LevelEvent ev = dragging;
