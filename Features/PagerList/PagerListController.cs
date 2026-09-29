@@ -12,13 +12,21 @@ using UnityEngine.UI;
 
 namespace ADOFAIEditorExtension.Features.PagerList
 {
-    /// <summary>挂在分页器文本（与分页器根对象）上，左键点击时打开直选列表。</summary>
+    /// <summary>
+    /// 挂在分页器文本（与分页器根对象）上，左键点击时打开直选列表。
+    ///
+    /// 本文件里所有 MonoBehaviour / EventTrigger 入口都先看 `Main.IsEnabled`：在 UMM 里禁用模组、
+    /// 而编辑器没能重载（用户在"未保存更改"提示里点了取消）时，Harmony 补丁已经全部撤掉，
+    /// 但这些挂在场景对象上的组件还活着 —— 不拦的话点击/拖拽仍会跑进我们的逻辑（改关卡数据、开弹窗）。
+    /// </summary>
     internal sealed class PagerClickTarget : MonoBehaviour
     {
         internal InspectorTab Tab;
 
         internal void OnPointerClick(BaseEventData eventData)
         {
+            if (!Main.IsEnabled)
+                return;                // 不消费：点击照原版冒泡
             PagerListController.OnPagerClick(Tab, eventData as PointerEventData);
         }
     }
@@ -55,7 +63,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// </summary>
         private void RefreshHover(PointerEventData eventData)
         {
-            if (eventData == null
+            if (!Main.IsEnabled
+                || eventData == null
                 || ADOFAIEditorExtension.Features.Notes.EventNote.IsEmpty(Note)
                 || !PagerListController.PointerInRect(NoteArea, eventData))
             {
@@ -73,7 +82,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
 
         public void OnPointerClick(PointerEventData eventData)
         {
-            if (eventData == null || eventData.button != PointerEventData.InputButton.Left)
+            if (!Main.IsEnabled || eventData == null || eventData.button != PointerEventData.InputButton.Left)
                 return;
             // 用游戏自己的输入状态（RDInput）判断修饰键，跟编辑器其它地方一致
             PagerListController.OnRowClick(Index, RDInput.holdingControl, RDInput.holdingShift);
@@ -104,7 +113,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
 
         public void OnPointerClick(PointerEventData eventData)
         {
-            if (eventData == null || eventData.button != PointerEventData.InputButton.Left || Owner == null)
+            if (!Main.IsEnabled || eventData == null || eventData.button != PointerEventData.InputButton.Left || Owner == null)
                 return;
             eventData.Use();
             if (Area == PagerHeaderArea.Arrow)
@@ -122,7 +131,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
     {
         public void OnPointerClick(PointerEventData eventData)
         {
-            if (eventData == null || eventData.button != PointerEventData.InputButton.Left)
+            if (!Main.IsEnabled || eventData == null || eventData.button != PointerEventData.InputButton.Left)
                 return;
             PagerListController.LogPopupBlankClick();
         }
@@ -138,6 +147,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
 
         public void OnBeginDrag(PointerEventData eventData)
         {
+            draggingIndex = -1;
+            if (!Main.IsEnabled)
+                return;                // 模组已禁用：不开始拖拽（OnDrag/OnEndDrag 随之全部早退）
             PagerRowClick click = GetComponent<PagerRowClick>();
             draggingIndex = click != null ? click.Index : -1;
             if (draggingIndex < 0)
@@ -166,6 +178,12 @@ namespace ADOFAIEditorExtension.Features.PagerList
             int index = draggingIndex;
             draggingIndex = -1;
             PagerListController.SetScrollEnabled(true);
+            if (!Main.IsEnabled)
+            {
+                // 拖到一半模组被禁用：只做收尾（恢复滚动 / 收掉落点反馈），不改任何关卡数据
+                PagerListController.ClearDropFeedback();
+                return;
+            }
 
             Vector2 position = eventData != null ? eventData.position : Vector2.zero;
             bool hasTarget = PagerListController.TryFindDropTarget(position, out PagerListController.DropTarget target);
@@ -273,6 +291,16 @@ namespace ADOFAIEditorExtension.Features.PagerList
         private static int openedFrame = -1;
         private static int currentRowOrder = -1;
 
+        /// <summary>
+        /// 打开被原版弹窗动画挡回去的那次点击（见 <see cref="ShowWindow"/>）：原版 `ShowPopup(true, …)` 在
+        /// `popupIsAnimating` 时直接 return（IL 核过），最常见的就是"刚点 OK 关窗、0.5 秒的收起动画还没播完
+        /// 就又点分页器"。记下标签页，由 <see cref="Tick"/> 等动画结束后补开一次；超过期限就作废。
+        /// </summary>
+        private static InspectorTab pendingOpenTab;
+        private static float pendingOpenDeadline = -1f;
+        private const float PendingOpenSeconds = 1.5f;
+        private static bool openAbortedByAnimation;
+
         /// <summary>当前显示的事件（跨重建保持；行下标会因分组/排序变化，所以记对象）。</summary>
         private static LevelEvent currentEvent;
 
@@ -287,6 +315,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// 我们**自己**正在把 fake 挂到面板上（`BindFakeToPanel` 内部的 ShowInspector 会连带触发
         /// 一次 `ShowPanel` 的后置）。这段时间不能按"面板选中的事件不在批量里"判定退出 ——
         /// 那一刻 `selectedEvent` 恰恰还是某个真实事件，退出来就是自己把自己的多选掐掉（§39 H2）。
+        /// 同一段时间里**写回也一律不做**：`SetProperties(fake)` 刷控件时有的控件会顺手"保存"一次
+        /// （见 <see cref="BindFakeToPanel"/>），那不是用户编辑。
         /// </summary>
         private static bool bindingBatch;
 
@@ -340,8 +370,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
             internal string Label;          // 头行的显示名
             internal int Count;             // 头行的组内数量
             internal int OriginalIndex;     // 事件行 = 该事件在 stack 里的下标
-            internal string Tag;
-            internal bool UseEventTag;
+            internal string Tag;            // 事件自己的分组标签（GroupTagKeyOf 那个键的值；没有该属性 = ""）
+            internal bool UseEventTag;      // Tag 读的是 eventTag（行上用 eventTag= 前缀）
+            internal string TargetTag;      // 砖上事件的 "tag"（MoveDecorations/SetText 等的**目标装饰选择器**，只显示、不参与分组）
             internal string Note;           // 事件行右侧显示的备注（§21），空串 = 不显示
         }
 
@@ -463,7 +494,13 @@ namespace ADOFAIEditorExtension.Features.PagerList
             // 备注那次 `text = …` 会被 TMP 吞掉（网格不重建）—— 表现就是"打开弹窗时备注列全空，
             // 随便点一行触发重建才出现"。而点行重建时弹窗已经是激活状态，所以那条路一直是好的。
             // 这一步同时把原版的 showingPopup 置了位 ⇒ 从这里出去的任何异常都得走 Open() 的收窗兜底。
-            ShowWindow();
+            if (!ShowWindow())
+            {
+                // 原版弹窗还在播动画，ShowPopup(true) 没生效（showingPopup 仍是 false）：窗口不能就这么显示
+                // （非模态 ⇒ 原版快捷键照跑、我们的快捷键又不接管），按"没打开"收拾干净，等动画完了补开。
+                AbortOpenForAnimation(tab);
+                return;
+            }
 
             BuildSlots(stack);
             int rowCount = CreateRows(tab);
@@ -476,11 +513,70 @@ namespace ADOFAIEditorExtension.Features.PagerList
             ResizeHost(rowCount);
             LayoutList();
             isOpen = true;
+            pendingOpenTab = null;
 
             // 批量态还活着：重开时按当前数据重建一次 fake（值/混合标记刷新）并挂回面板。
             // 这是**恢复**不是新选择 ⇒ 不再提示一遍"已选择 N 个事件"（§39 M2）。
             if (selectedIndices.Count >= 2)
                 ApplySelectionToPanel(false);
+        }
+
+        /// <summary>
+        /// `ShowWindow` 没能让原版进入弹窗态时的收尾：只撤掉 OpenCore 已经改过的弹窗状态
+        /// （不调 `ShowPopup(false)` —— 那会再起一段收起动画，把"动画中"拖得更久），批量态原样保留；
+        /// 然后登记一次延后打开（同一个标签页的重试保持最初的期限，不会无限续期）。
+        /// </summary>
+        private static void AbortOpenForAnimation(InspectorTab tab)
+        {
+            isOpen = false;
+            openTab = null;
+            currentEvent = null;
+            selectedIndices.Clear();
+            selectionAnchor = -1;
+            openAbortedByAnimation = true;
+            if (popupRoot != null)
+                popupRoot.SetActive(false);
+            if (pendingOpenTab != tab)
+            {
+                pendingOpenTab = tab;
+                pendingOpenDeadline = Time.unscaledTime + PendingOpenSeconds;
+                LogMultiEdit("打开弹窗时原版弹窗动画未结束（ShowPopup 未生效）⇒ 延后到动画结束再打开");
+            }
+        }
+
+        /// <summary>补开被动画挡回去的那次打开（<see cref="Tick"/> 每帧调；动画没完就继续等，过期作废）。</summary>
+        private static void RetryPendingOpen()
+        {
+            InspectorTab tab = pendingOpenTab;
+            if (tab == null)
+                return;
+            if (isOpen || !Main.IsEnabled || Time.unscaledTime > pendingOpenDeadline)
+            {
+                pendingOpenTab = null;
+                return;
+            }
+            scnEditor editor = scnEditor.instance;
+            if (editor == null || EditorPopupAnimating(editor))
+                return;                            // 还在动画中：下一帧再看
+            if (!CanOpen(tab, out List<LevelEvent> stack))
+            {
+                pendingOpenTab = null;             // 条件已经变了（换砖/换类型）：这次点击作废
+                return;
+            }
+            openAbortedByAnimation = false;
+            Open(tab, stack);
+            // 打开成功，或者是因为别的原因失败（那种失败每帧重试只会刷日志）⇒ 都不再重试
+            if (isOpen || !openAbortedByAnimation)
+                pendingOpenTab = null;
+        }
+
+        /// <summary>原版 `popupIsAnimating`（私有字段；读不到按"没在动画"处理）。</summary>
+        private static bool EditorPopupAnimating(scnEditor editor)
+        {
+            if (editor == null)
+                return false;
+            try { return editor.Get("popupIsAnimating") is bool animating && animating; }
+            catch { return false; }
         }
 
         /// <summary>
@@ -594,7 +690,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
         internal static void OnSelectedFloorChanged()
         {
             if (Time.frameCount > suppressCloseUntilFrame)
+            {
                 ExitMultiSelect("换砖");
+                pendingOpenTab = null;             // 换砖了：还没补开的那次点击属于旧砖，作废
+            }
             CloseIfOpen();
         }
 
@@ -604,7 +703,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// </summary>
         private static void CloseKeepingBatch()
         {
-            Close(true);
+            // 模组已被禁用（补丁全撤了、编辑器没能重载）：批量写回的钩子已经不在，留着 fake 挂在面板上
+            // 只会让编辑落空 ⇒ 这时 OK 按普通关窗处理（退出多选、面板回到真实事件）。关窗本身照做：
+            // 这是禁用后收掉这块自建窗口的唯一入口（原版 Esc 只收它自己的遮罩）。
+            Close(Main.IsEnabled);
         }
 
         private static void Close()
@@ -793,6 +895,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
             openedFrame = -1;
             currentRowOrder = -1;
             popupFlagStuck = null;
+            pendingOpenTab = null;
+            openAbortedByAnimation = false;
         }
 
         // ------------------------------------------------------------------ 列表内容
@@ -802,9 +906,17 @@ namespace ADOFAIEditorExtension.Features.PagerList
         {
             // 行被销毁时鼠标可能正停在其中一行上（收不到 OnPointerExit），所以重建前先收浮层
             HideNoteTooltip();
+            // Destroy 是延后到帧末才生效的，而紧接着的 LayoutList 会立刻强制重排 listContent ——
+            // 不先摘下来，旧行在这一帧里仍是布局子对象（行高/滚动位置按"新旧两批行"算）。
+            // 先停用（VerticalLayoutGroup 不计未激活的子对象）再脱离父节点，最后才 Destroy。
             for (int i = 0; i < rows.Count; i++)
-                if (rows[i] != null)
-                    UnityEngine.Object.Destroy(rows[i]);
+            {
+                if (rows[i] == null)
+                    continue;
+                rows[i].SetActive(false);
+                rows[i].transform.SetParent(null, false);
+                UnityEngine.Object.Destroy(rows[i]);
+            }
             rows.Clear();
 
             if (rowTemplate == null || listContent == null || slots.Count == 0)
@@ -1306,7 +1418,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
         ///   ① 手动归属优先（事件 data 里的 `aeeGroup`，键名与装饰完全一致）；
         ///   ② 自定义分组里 tag 精确匹配（按定义顺序先命中先归）；
         ///   ③ 兜底组 = **仅自定义模式**下"第一个 tag 留空的自定义分组"；
-        ///   ④ 其余按事件 tag（tag ?? eventTag）分组，没有 tag 的进「未分组」。
+        ///   ④ 其余按事件**自己的**标签分组（`DecoGroupActions.GroupTagKeyOf` ⇒ 砖上事件读 eventTag；
+        ///      事件上的 "tag" 是目标装饰选择器，不参与分组），没有标签的进「未分组」。
         /// 与装饰列表的区别：这里的事件都来自同一块砖、同一类型，所以没有"按类型"这一层；
         /// 而且只有**一个**可见分组时不显示组头（与旧的"按 tag 排序"观感一致）。见 §16.2。
         /// </summary>
@@ -1362,9 +1475,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     continue;
                 }
 
-                string tag = GetTag(evt, "tag");
-                string eventTag = tag.Length == 0 ? GetTag(evt, "eventTag") : "";
-                string key = tag.Length > 0 ? tag : eventTag;
+                // 分组标签 = 事件**自己的**标签（DecoGroupActions.GroupTagKeyOf：砖上事件是 eventTag）。
+                // 事件上的 "tag" 是 MoveDecorations / SetText 等的目标装饰选择器，不能拿来分组；
+                // 该类型没注册 eventTag ⇒ 视为无标签（只能手动归属）。
+                string key = GroupTagOf(evt);
 
                 // ② 自定义分组的 tag 精确匹配
                 int matched = -1;
@@ -1439,20 +1553,15 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 {
                     int index = bucket.Members[m];
                     LevelEvent evt = stack[index];
-                    string rowTag = GetTag(evt, "tag");
-                    bool useEventTag = false;
-                    if (rowTag.Length == 0)
-                    {
-                        rowTag = GetTag(evt, "eventTag");
-                        useEventTag = rowTag.Length > 0;
-                    }
+                    string tagKey = DecoGroupActions.GroupTagKeyOf(evt, DecoGroupState.GroupSet.Event);
                     slots.Add(new Slot
                     {
                         IsHeader = false,
                         Key = bucket.Key,
                         OriginalIndex = index,
-                        Tag = rowTag,
-                        UseEventTag = useEventTag,
+                        Tag = tagKey != null ? GetTag(evt, tagKey) : "",
+                        UseEventTag = tagKey == "eventTag",
+                        TargetTag = tagKey != "tag" ? GetTag(evt, "tag") : "",
                         Note = Features.Notes.EventNote.GetNote(evt)
                     });
                 }
@@ -1472,14 +1581,28 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 text += "  " + L(entry.UseEventTag ? "aee.pager.eventTagPrefix" : "aee.pager.tagPrefix") + entry.Tag;
             else if (anyTagged)
                 text += "  " + L("aee.pager.noTag");
+            // 目标装饰选择器（"tag"）照旧显示在行上 —— 同一堆 MoveDecorations 往往就靠它区分 —— 但它不是分组标签
+            string target = entry.TargetTag ?? "";
+            if (target.Length > 0)
+                text += "  " + L("aee.pager.tagPrefix") + target;
             if (isCurrent)
                 text = L("aee.pager.current") + " " + text;
             return text;
         }
 
+        /// <summary>
+        /// 事件用来分组的标签值（<see cref="DecoGroupActions.GroupTagKeyOf"/> 决定读哪个键；
+        /// 该类型没有可分组的标签属性 ⇒ ""，即"未分组"，也不能被拖进按标签的组）。
+        /// </summary>
+        private static string GroupTagOf(LevelEvent evt)
+        {
+            string tagKey = DecoGroupActions.GroupTagKeyOf(evt, DecoGroupState.GroupSet.Event);
+            return tagKey != null ? GetTag(evt, tagKey) : "";
+        }
+
         private static string GetTag(LevelEvent evt, string key)
         {
-            if (evt == null)
+            if (evt == null || string.IsNullOrEmpty(key))
                 return "";
             try
             {
@@ -1580,18 +1703,47 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>
-        /// shift 范围选择的核心（纯逻辑，离线 harness 直接断言）：**先清空再填 [min,max]**，
+        /// shift 范围选择的核心（纯逻辑，离线 harness 直接断言）：**先清空再填 [锚点, 被点行]**，
         /// 所以同一段范围既能加选也能减选；锚点由调用方给（shift 点击本身不移动锚点）。
+        ///
+        /// 范围按**列表里看得到的顺序**取（`slots` 的事件行：已按分组/排序排好，折叠组的成员根本不在里面），
+        /// 而不是 stack 下标 —— 分组后第 2 行未必是下标 1，按下标取会选中视觉上不相邻、甚至藏在折叠组里的事件。
+        /// 锚点不在可见行里（所在组被折叠了）⇒ 退化成只选被点的那一行。
+        /// 槽位表里一行事件都没有（离线 harness 直接调用时）才退回按下标取。
         /// </summary>
         internal static void ApplyRangeSelection(int anchor, int clickedIndex)
         {
             selectedIndices.Clear();
-            int from = Mathf.Min(anchor, clickedIndex);
-            int to = Mathf.Max(anchor, clickedIndex);
-            for (int i = from; i <= to; i++)
+            var order = new List<int>(slots.Count);
+            for (int i = 0; i < slots.Count; i++)
+                if (!slots[i].IsHeader)
+                    order.Add(slots[i].OriginalIndex);
+
+            if (order.Count == 0)
             {
-                if (i >= 0 && currentStack != null && i < currentStack.Count)
-                    selectedIndices.Add(i);
+                int from = Mathf.Min(anchor, clickedIndex);
+                int to = Mathf.Max(anchor, clickedIndex);
+                for (int i = from; i <= to; i++)
+                {
+                    if (i >= 0 && currentStack != null && i < currentStack.Count)
+                        selectedIndices.Add(i);
+                }
+                return;
+            }
+
+            int clickedPos = order.IndexOf(clickedIndex);
+            if (clickedPos < 0)
+                return;                            // 点的行不在列表里（不该发生）：什么都不选
+            int anchorPos = order.IndexOf(anchor);
+            if (anchorPos < 0)
+                anchorPos = clickedPos;
+            int start = Mathf.Min(anchorPos, clickedPos);
+            int end = Mathf.Max(anchorPos, clickedPos);
+            for (int p = start; p <= end; p++)
+            {
+                int index = order[p];
+                if (index >= 0 && currentStack != null && index < currentStack.Count)
+                    selectedIndices.Add(index);
             }
         }
 
@@ -1741,7 +1893,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
             }
 
             // 剪切 / 粘贴改动了事件（剪切甚至把事件删了）⇒ 退出多选（§34.3）；
-            // ExitMultiSelect → ClearFakeEvent 会把面板指回"还活着"的真实事件（当前事件被剪掉时按标签页推）
+            // ExitMultiSelect → ClearFakeEvent：面板还指着 fake 时把它指回"还活着"的真实事件（当前事件被剪掉时
+            // 按标签页推）；原版收尾已经把面板切到真实事件上（剪切的 ShowPanel、粘贴的 selectAfterward）就不动它
             ExitMultiSelect(followPanel ? "粘贴改动了事件" : "剪切改动了事件");
 
             if (followPanel)
@@ -1918,12 +2071,19 @@ namespace ADOFAIEditorExtension.Features.PagerList
             if (panel == null || fake == null)
                 return;
 
+            bool wasBinding = bindingBatch;
             try
             {
                 // 这次面板切换是**弹窗自己**发起的：先声明一下，否则"面板切换就关窗"的补丁
                 // 会在 shift 加/减选（多选态刷新）时把弹窗关掉（§26.2）。
                 SuppressAutoClose();
-                bindingBatch = true;                 // 连带压住"面板选中事件已不在批量里"的判定（§39 H2）
+                // 连带压住"面板选中事件已不在批量里"的判定（§39 H2），以及**写回**：
+                // `SetProperties(fake)` 刷控件时，有的控件会顺手回调一次保存
+                // （`PropertyControl_MinMaxGradient.SetValue` → `TweakableDropdown.SelectItem` → onValueChanged
+                // → `Save()` → `selectedEvent[key] = …` + `OnValueChange`）——那不是用户编辑，
+                // 放过去就会把 fake 上"第一个事件的值"写回全部真实事件（混合值被抹平）并多出一个撤销点。
+                // 标志覆盖 ShowInspector → SetProperties → 标混合/放开混合行的整段（finally 里恢复原值）。
+                bindingBatch = true;
                 panel.ShowInspector(true, false);          // 先把面板显示出来（内部会用真实事件刷一次）
                 panel.selectedEvent = fake;                // 再把它指向我们的 fake
                 panel.selectedEventType = fake.eventType;
@@ -1941,7 +2101,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             }
             finally
             {
-                bindingBatch = false;
+                bindingBatch = wasBinding;
             }
         }
 
@@ -2236,28 +2396,32 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// 顺手把该键在真实事件上的"启用"标记清掉（等价于原版/PACL2 的"多选视图里开着的属性对全体也开"），
         /// 否则属性在单事件视图里仍是"关"，用户会以为没生效。装饰还要刷新装饰对象。
         ///
-        /// **撤销点**：控件自己的回调大多已经开着一个 `SaveStateScope`（IL 核过：除了
-        /// `FloatPair::SaveWithoutRecording` / `Toggle::ProcessFile` / `Toggle::OggEncodeCallback`
-        /// 都有），我们只在 `editor.changingState <= 0`（没人在管撤销）时才自己开一个
-        /// ⇒ 一次编辑仍然只有一个撤销点。
+        /// **撤销点：我们自己从不开 `SaveStateScope`，只跟着原版走**。控件自己的回调大多已经开着一个
+        /// （IL 核过：除了 `FloatPair::SaveWithoutRecording` / `Toggle::ProcessFile` / `Toggle::OggEncodeCallback`
+        /// 都有）⇒ 我们的写回落在它里面，一次编辑一个撤销点。没开作用域的那几条路径，原版对单个事件
+        /// 也**不记**撤销点 —— 尤其 `FloatPair` 拖动时 `MinMaxControl.onChange` 每一步都走
+        /// `SaveWithoutRecording`（`set_Item` + `OnValueChange`，没有作用域），只在结束编辑的 `Save()` 上开一次。
+        /// 以前"没人在管撤销就自己开一个"，拖一下就是每步一个 SaveState（撤销栈上限 100，
+        /// 一次拖动就能把历史全挤掉）；现在这些步骤只写值不记录，由结束编辑那次原版作用域统一记一个点。
+        /// （另一个可选方案"按帧/按键合并成一个点"做不到"恰好一个"：拖动开头那个点加上结束编辑的点就是两个。）
         ///
-        /// **幂等**：两个钩子对同一次编辑都会进来、控件也可能连续改多个键；值已经一致就什么都不做
-        /// （连撤销点都不开）。
+        /// **幂等**：两个钩子对同一次编辑都会进来、控件也可能连续改多个键；值已经一致就什么都不做。
+        ///
+        /// **绑定期间不写回**（`bindingBatch`）：见 <see cref="BindFakeToPanel"/> —— 那时控件回调的"保存"
+        /// 是刷新面板的副作用，不是用户编辑。
         ///
         /// `changedKey` 拿不到时（理论上不会）退回原来的整体写回，行为与修改前一致。
         /// </summary>
         internal static void ApplyFakeToRealEvents(string changedKey)
         {
+            if (bindingBatch)
+                return;
             try
             {
                 FlushPendingToastIfSettled();      // 有交互了 ⇒ 把上次"待弹"的数量提示冲掉（§35.3）
                 LevelEvent fake = fakeEvent;
                 if (fake == null)
-                {
-                    // §34 之后：没有批量态（没做过多选、或已退出）⇒ 这次改动就只作用于面板当前那个事件。
-                    LogMultiEdit("写回跳过：当前没有多选批量态，这次改动只作用于面板当前那个事件");
-                    return;
-                }
+                    return;                        // 没有批量态 ⇒ 这次改动只作用于面板当前那个事件（每次编辑都会进来，不记日志）
                 if (fake.realEvents == null || fake.realEvents.Count < 2)
                 {
                     LogMultiEdit("写回跳过：fake.realEvents 不足 2 个（" + (fake.realEvents != null ? fake.realEvents.Count : -1) + "）");
@@ -2275,24 +2439,16 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     LogMultiEdit("写回跳过：" + key + " 在批量编辑黑名单里");
                     return;
                 }
-                // 控件自己的回调大多已经开着 SaveStateScope（IL 核过）；只有没人在管撤销时才自己开一个
-                // ⇒ 一次编辑仍然只有一个撤销点（§32.2）。
-                bool ownScope = editor.changingState <= 0;
+                // 撤销点完全跟着原版：原版开着作用域（changingState > 0）就落在它里面；
+                // 没开 = 原版这一步本来就不记录（拖动中的 SaveWithoutRecording 等）⇒ 我们也只写值（见方法注释）。
+                bool recording = editor.changingState > 0;
 
                 if (string.IsNullOrEmpty(key))
                 {
                     // 兜底：不知道改的是哪个键 ⇒ 走整体写回（与修改前一致）
                     try
                     {
-                        if (ownScope)
-                        {
-                            using (new SaveStateScope(editor, false, true, false))
-                                fake.ApplyPropertiesToRealEvents();
-                        }
-                        else
-                        {
-                            fake.ApplyPropertiesToRealEvents();
-                        }
+                        fake.ApplyPropertiesToRealEvents();
                         LogMultiEdit("写回（整体）：" + fake.realEvents.Count + " 个事件");
                     }
                     catch (Exception e)
@@ -2306,8 +2462,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 bool hasValue = false;
                 try { hasValue = fake.TryGet<object>(key, out value); }
                 catch { }
-                if (!hasValue && !fake.data.ContainsKey(key))
-                    hasValue = fake.data.TryGetValue(key, out value);      // TryGet 的类型转换失败时兜一手
+                if (!hasValue && fake.data.ContainsKey(key))
+                    hasValue = fake.data.TryGetValue(key, out value);      // TryGet 的类型转换失败、但键确实在时兜一手（直接取原值）
                 if (!hasValue)
                 {
                     // fake 上没有这个键（理论上不该发生）：直接退出，别把 null 写进所有事件
@@ -2317,7 +2473,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
 
                 // 先干算一遍"哪些事件真的需要写"：
                 //  · 值已经一致的跳过（幂等 —— 两个钩子对同一次编辑各跑一次、以及"原值没变"的提交都不会重复写）
-                //  · 全都一致且没有"关"的标记 ⇒ 直接返回，**连 SaveStateScope 都不开**（不产生空的撤销点）
+                //  · 全都一致且没有"关"的标记 ⇒ 什么都不写（也不扫关卡、不记日志）
                 PropertyInfo propInfo = null;
                 if (fake.info != null && fake.info.propertiesInfo != null)
                     fake.info.propertiesInfo.TryGetValue(key, out propInfo);
@@ -2344,17 +2500,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 }
 
                 if (pending > 0)
-                {
-                    if (ownScope)
-                    {
-                        using (new SaveStateScope(editor, false, true, false))
-                            WriteKeyToRealEvents(fake, editor, key, value, isFloorKey);
-                    }
-                    else
-                    {
-                        WriteKeyToRealEvents(fake, editor, key, value, isFloorKey);
-                    }
-                }
+                    WriteKeyToRealEvents(fake, editor, key, value, isFloorKey, recording);
 
                 // 记账：这个键对全体一致了 ⇒ 不再是混合值，标签上的 (Mixed) 也摘掉
                 if (mixedKeys.Remove(key) && fake.disabled.ContainsKey(key))
@@ -2374,19 +2520,33 @@ namespace ADOFAIEditorExtension.Features.PagerList
             }
         }
 
-        /// <summary>改这个键要不要重建弹窗列表（分组键 + 行上显示的备注）。</summary>
+        /// <summary>
+        /// 改这个键要不要重建弹窗列表：行上显示的东西都算 ——
+        /// eventTag（分组标签，见 <see cref="GroupTagOf"/>，改了要重新分桶）、
+        /// tag（砖上事件的目标装饰选择器：**不参与分组**，但行上照样显示它）、备注。
+        /// </summary>
         private static bool IsGroupingKey(string key)
         {
             return key == "tag" || key == "eventTag" || key == Features.Notes.EventNote.KeyNote;
         }
 
-        /// <summary>把一个键的值写到 fake 的全部真实事件上（撤销点由调用方按 `changingState` 决定，见上）。</summary>
-        private static void WriteKeyToRealEvents(LevelEvent fake, scnEditor editor, string key, object value, bool isFloorKey)
+        // 非记录写回（拖动中的每一步）的日志节流：每个键最多每 0.5 秒记一条，其余只计数
+        private const float LiveWriteLogSeconds = 0.5f;
+        private static string liveWriteLogKey;
+        private static float nextLiveWriteLogTime = -1f;
+        private static int suppressedLiveWrites;
+
+        /// <summary>
+        /// 把一个键的值写到 fake 的全部真实事件上（撤销点跟着原版，见 <see cref="ApplyFakeToRealEvents"/>）。
+        /// `recording = false`（原版没开作用域，典型是拖动中的每一步）时**不扫关卡**
+        /// （僵尸计数要把整关事件收一遍，O(N)）并对日志节流 —— 拖一下就是几十上百步。
+        /// </summary>
+        private static void WriteKeyToRealEvents(LevelEvent fake, scnEditor editor, string key, object value, bool isFloorKey, bool recording)
         {
             int written = 0;
             // 僵尸（已经被删出关卡、但仍留在 fake.realEvents 里）单独计数（§39 H3）：
             // 写进它们等于没写，日志里"实际数 < 应写数"到底是哪一类原因造成的，就看这个数。
-            HashSet<LevelEvent> inLevel = CollectLevelEvents();
+            HashSet<LevelEvent> inLevel = recording ? CollectLevelEvents() : null;
             int zombies = 0;
             for (int i = 0; i < fake.realEvents.Count; i++)
             {
@@ -2414,6 +2574,22 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 for (int i = 0; i < fake.realEvents.Count; i++)
                     if (fake.realEvents[i] != null)
                         editor.UpdateDecorationObject(fake.realEvents[i]);
+
+            if (!recording)
+            {
+                float now = Time.unscaledTime;
+                if (key == liveWriteLogKey && now < nextLiveWriteLogTime)
+                {
+                    suppressedLiveWrites++;
+                    return;
+                }
+                string skipped = suppressedLiveWrites > 0 ? "，期间另有 " + suppressedLiveWrites + " 步未记" : "";
+                liveWriteLogKey = key;
+                nextLiveWriteLogTime = now + LiveWriteLogSeconds;
+                suppressedLiveWrites = 0;
+                LogMultiEdit("写回（不记撤销，跟随原版的非记录写值）：" + key + " → " + written + " 个事件" + skipped);
+                return;
+            }
 
             LogMultiEdit("写回：" + key + " → " + written + " 个事件（应写 " + ExpectedWrites(fake) + " 个"
                 + (zombies > 0 ? "，其中 " + zombies + " 个已不在关卡里（僵尸）" : "") + "）");
@@ -2551,7 +2727,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// （IL 核过：Esc = `new EditorKeybind(KeyModifier.0, (KeyCode)27, true).IsPressed`）——
         /// 它只收掉**原版自己**的弹窗状态与遮罩，我们这块挂在 Canvas 下的自建窗口它管不到，
         /// 所以才出现"窗口不消失、但外面已经能点"。这里在同一个入口（我们的 Prefix 跑在它方法体之前）
-        /// 自己把窗口收掉，之后原版照旧走它的 Esc 分支，互不打架。
+        /// 自己把窗口收掉（`Close` 里已经 `ShowPopup(false, …)`，与原版 Esc 分支做的是同一件事）。
+        /// **收掉之后这一帧必须跳过原版方法体**（返回 true ⇒ 前缀返回 false）：原版是在我们之后才读
+        /// `showingPopup` 的，那时它已经是 false，于是不走 Esc 分支、改走 `keybindManager.ExecutePressedActions()`
+        /// ⇒ 同一次 Esc 又被当成普通快捷键执行一遍（切换文件操作面板 + DeselectAll，连带退出多选）。
         ///
         /// §42 bug 2：接管条件从"只看 isOpen"放宽成"isOpen 或 showingPopup"。因为存在
         /// "showingPopup 已经是 true 而 isOpen 还是 false"的半死状态（`Open` 在 ShowWindow 之后、
@@ -2559,32 +2738,37 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// 原版快捷键全停摆而 Esc 又不接管，玩家就只能重开编辑器。
         /// isOpen=false 这条分支**只做清标志该做的最小动作**：不去跑完整 Close() ——
         /// 弹窗对象可能只建了一半，走完整路径反而容易再撞一次 NRE。
+        ///
+        /// 先看 Esc 再反射读 `showingPopup`：这个方法每帧都跑，没按 Esc 的帧就别付反射的开销。
+        /// 返回 true = 这一帧的 Esc 由我们处理掉了。
         /// </summary>
-        internal static void HandlePopupEscape()
+        internal static bool HandlePopupEscape()
         {
-            scnEditor editor = scnEditor.instance;
-            bool showingPopup = EditorShowsPopup(editor);
-            if (!isOpen && !showingPopup)
-                return;                            // 我们的窗没开、原版标志也没置位 ⇒ 不接管 Esc
             bool esc;
             // 用游戏自己的输入包装（RDInput）：本工程没有引用 UnityEngine.InputLegacyModule，
             // 直接调 Input.GetKeyDown 编译不过；RDInput.WentDown 就是"这一帧按下"，
             // 与 EditorKeybind.IsPressed 同源（EditorKeybind 对 Esc 的判定就走它）。
             try { esc = RDInput.WentDown(KeyCode.Escape); }
-            catch { return; }
+            catch { return false; }
             if (!esc)
-                return;
+                return false;
+
+            scnEditor editor = scnEditor.instance;
+            bool showingPopup = EditorShowsPopup(editor);
+            if (!isOpen && !showingPopup)
+                return false;                      // 我们的窗没开、原版标志也没置位 ⇒ 不接管 Esc
 
             if (!isOpen)
             {
                 LogMultiEdit("Esc：弹窗未开但 showingPopup 卡住 ⇒ 只清标志");
                 try { editor.ShowPopup(false, (scnEditor.PopupType)233, false); }
                 catch (Exception e) { Main.Logger?.Log("清 showingPopup 失败: " + e.Message); }
-                return;
+                return true;
             }
 
             LogMultiEdit("Esc 关窗（等价于点 OK，保留多选：" + BatchCount() + " 个事件）");
             Close(true);
+            return true;
         }
 
         // ------------------------------------------------------ showingPopup 卡住的自检（§42 bug 2）
@@ -2680,12 +2864,15 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>每帧的收尾（`InspectorPanel.Update` 后置补丁 + `HandleKeyboardActions` 前置补丁）：
-        /// 数量稳定后把待弹的提示弹出去；顺带补做欠一次的批量存活校验（§39 H3）。</summary>
+        /// 数量稳定后把待弹的提示弹出去；顺带补做欠一次的批量存活校验（§39 H3），
+        /// 以及补开被原版弹窗动画挡回去的那次打开（见 <see cref="AbortOpenForAnimation"/>）。</summary>
         internal static void Tick()
         {
             if (pendingLivenessCheck)
                 VerifyBatchEventsAlive();
             FlushPendingToastIfSettled();
+            if (pendingOpenTab != null)
+                RetryPendingOpen();
         }
 
         private static void FlushToast()
@@ -2763,44 +2950,18 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>
-        /// 撤销 / 重做之后（§34.5）：批量里的值可能被回滚、事件对象也可能被换掉 ⇒ 按当前数据重建 fake
-        /// （值 / 混合标记重算，面板继续保持批量视图）；事件全失效就退出多选。
+        /// 撤销 / 重做之后（§34.5）：**直接退出多选**。
+        /// 原版 `UndoOrRedo` 把整份 levelData 换成撤销栈里的深拷贝（IL：`customLevel.levelData = LevelState.data`），
+        /// 批量里的事件对象一个都不会留在新关卡里；而且它先 `DeselectFloors` 再按记录重选砖，
+        /// 通常在这里之前"换砖"那条路径就已经把多选退掉了。以前这里"按当前数据重建 fake"的分支永远走不到，
+        /// 反而在选中砖为空（取不到 stack）时直接 return，把一个全是僵尸的批量态留了下来。
         /// </summary>
         internal static void OnLevelUndoRedo(string what)
         {
             LevelEvent batch = fakeEvent;
-            if (batch == null || batch.realEvents == null || batch.realEvents.Count < 2)
+            if (batch == null)
                 return;
-            InspectorTab tab = fakeTab;
-            List<LevelEvent> stack = null;
-            try
-            {
-                scnEditor editor = scnEditor.instance;
-                stack = editor != null && tab != null ? editor.GetSelectedFloorEvents(tab.levelEventType) : null;
-            }
-            catch { }
-            if (stack == null)
-                return;
-
-            var alive = new List<LevelEvent>();
-            for (int i = 0; i < batch.realEvents.Count; i++)
-            {
-                LevelEvent e = batch.realEvents[i];
-                if (e != null && stack.Contains(e))
-                    alive.Add(e);
-            }
-            if (alive.Count < 2)
-            {
-                ExitMultiSelect(what + "后批量里的事件已失效");
-                return;
-            }
-
-            LevelEvent rebuilt = BuildFakeEvent(alive);
-            if (rebuilt == null)
-                return;
-            fakeEvent = rebuilt;
-            BindFakeToPanel(rebuilt);
-            LogMultiEdit(what + "后重建批量面板：" + alive.Count + " 个事件，混合值 " + mixedKeys.Count + " 个");
+            ExitMultiSelect(what + "会整体换掉事件对象，批量里的事件已失效");
         }
 
         /// <summary>
@@ -2810,9 +2971,34 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// </summary>
         internal static void OnFakeValueWritten(LevelEvent written, string key)
         {
-            if (written == null || key == null)
-                return;
+            if (bindingBatch || written == null || key == null)
+                return;                            // 绑定面板期间的写值是刷新副作用，不写回（见 BindFakeToPanel）
             if (fakeEvent == null || !ReferenceEquals(written, fakeEvent))
+                return;
+            ApplyFakeToRealEvents(key);
+        }
+
+        /// <summary>
+        /// `PropertyControl.OnValueChange` 后置补丁的入口：**只有这个控件所在面板正在编辑我们的 fake**
+        /// （`propertiesPanel.inspectorPanel.selectedEvent` 与 fake 是同一个对象）才写回。
+        /// `OnValueChange` 是所有面板共用的出口 —— 关卡设置、粒子编辑器里改一个与混合键同名的属性，
+        /// 不按归属过滤就会被当成批量编辑写到各真实事件上。控件的归属读不到时同样不动：
+        /// 真正写进 fake 的编辑还有 `set_Item` 那个钩子（<see cref="OnFakeValueWritten"/>）兜着。
+        /// </summary>
+        internal static void OnControlValueChanged(PropertyControl control, string key)
+        {
+            LevelEvent fake = fakeEvent;
+            if (fake == null || bindingBatch || control == null)
+                return;
+            LevelEvent edited = null;
+            try
+            {
+                PropertiesPanel owner = control.propertiesPanel;
+                InspectorPanel inspector = owner != null ? owner.inspectorPanel : null;
+                edited = inspector != null ? inspector.selectedEvent : null;
+            }
+            catch { }
+            if (!ReferenceEquals(edited, fake))
                 return;
             ApplyFakeToRealEvents(key);
         }
@@ -2828,7 +3014,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
         internal static void ClearFakeEvent()
         {
             ClearAllMixedLabels();
-            bool had = fakeEvent != null;
+            LevelEvent oldFake = fakeEvent;
+            bool had = oldFake != null;
             fakeEvent = null;
             fakeTab = null;
             mixedKeys.Clear();
@@ -2837,7 +3024,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
             try
             {
                 InspectorPanel panel = scnEditor.instance != null ? scnEditor.instance.levelEventsPanel : null;
-                LevelEvent real = RealCurrentEvent();
+                // 只有面板**还指着这个 fake** 时才把它指回真实事件。原版已经把面板切到别的真实事件上
+                // （切别的类型 tab、箭头切事件、换砖、撤销恢复、粘贴后选中新事件……）就别再改它 ——
+                // 否则会把面板拽回旧类型 / 旧事件，覆盖掉原版刚做的选择。
+                LevelEvent real = panel != null && ReferenceEquals(panel.selectedEvent, oldFake) ? RealCurrentEvent() : null;
                 if (panel != null && real != null)
                 {
                     panel.selectedEvent = real;
@@ -2876,6 +3066,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// <summary>
         /// 一个"真实"的当前事件（退出批量后把面板指回它）：优先弹窗记的 `currentEvent`（还得活着），
         /// 弹窗关着（`currentEvent` 为 null）或它已被删（剪切）时，按标签页的 eventIndex 从当前砖推。
+        /// 都推不出来就返回 null（调用方据此不动面板）—— 绝不返回一个已经不在关卡里的事件
+        /// （剪切把这一堆剪空之后，`currentEvent` 就是个已删除的对象）。
         /// </summary>
         private static LevelEvent RealCurrentEvent()
         {
@@ -2887,11 +3079,18 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 stack = editor != null && tab != null ? editor.GetSelectedFloorEvents(tab.levelEventType) : null;
             }
             catch { }
-            if (currentEvent != null && (stack == null || stack.Contains(currentEvent)))
+            if (currentEvent != null && stack != null && stack.Contains(currentEvent))
                 return currentEvent;
             if (stack != null && stack.Count > 0 && tab != null)
                 return stack[Mathf.Clamp(tab.eventIndex, 0, stack.Count - 1)];
-            return currentEvent;
+            if (currentEvent != null && stack == null)
+            {
+                // 取不到当前堆（标签页丢了等）：还在关卡事件表里才用；读不到事件表时宁可不用
+                HashSet<LevelEvent> inLevel = CollectLevelEvents();
+                if (inLevel != null && inLevel.Contains(currentEvent))
+                    return currentEvent;
+            }
+            return null;
         }
 
         /// <summary>把面板所有行标签上的 (Mixed) 后缀摘掉（丢掉 fake / 退回单事件视图时用）。</summary>
@@ -2978,7 +3177,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
 
         internal static void UpdateDropFeedback(Vector2 screenPosition, int draggingIndex)
         {
-            if (!TryFindDropTarget(screenPosition, out DropTarget target))
+            // 写不进去的落点（按标签的组、但这类事件没有 eventTag 属性）不给反馈：松手也不会有任何效果
+            if (!TryFindDropTarget(screenPosition, out DropTarget target) || !IsDropAcceptable(draggingIndex, target))
             {
                 ClearDropFeedback();
                 return;
@@ -3158,8 +3358,18 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>
-        /// 落点生效：改归属（复用装饰分组那套：写 tag / 记手动归属 / 退出分组）+ 在
+        /// 落点生效：改归属（复用装饰分组那套：写分组标签 / 记手动归属 / 退出分组）+ 在
         /// `levelData.levelEvents` 里移到锚点旁边。多选时整批一起移动（保持原相对顺序）。
+        ///
+        /// 几条规则：
+        ///  · **只给"不在目标组里"的事件改归属**：已经在这个组里的只排序 —— 否则拖到自己组里排个序，
+        ///    也可能被"规范化"一遍（例如兜底组里的事件会被清掉 eventTag）；
+        ///  · 按标签的组、但这类事件没有 eventTag 属性（`GroupTagKeyOf` 为 null）⇒ 写不进去 ⇒ 这类落点整个无效
+        ///    （拖进/拖出手动分组仍然可以）；
+        ///  · 落在**自己或别的正在移动的行**上 ⇒ 不排序（以前会退化成"挪到组尾"）；若其中有别组的事件，
+        ///    仍按"加入这一组"改归属；
+        ///  · 先干算"归属要不要改 / 顺序会不会变"，都没有就什么都不做 —— **不开 SaveStateScope**（它一开就记撤销点）。
+        /// 生效后保留弹窗选中集（按对象重映射到新下标），批量态按新数据重新挂一次面板（值/混合标记与改后一致）。
         /// </summary>
         internal static void ApplyDrop(int draggingIndex, DropTarget target)
         {
@@ -3174,51 +3384,64 @@ namespace ADOFAIEditorExtension.Features.PagerList
             if (draggingIndex < 0 || draggingIndex >= stack.Count)
                 return;
 
-            var moving = new List<int>();
-            if (selectedIndices.Contains(draggingIndex))
-            {
-                for (int i = 0; i < stack.Count; i++)
-                    if (selectedIndices.Contains(i))
-                        moving.Add(i);
-            }
-            else
-            {
-                moving.Add(draggingIndex);
-            }
-            moving.Sort();
+            List<int> moving = CollectMovingIndices(draggingIndex, stack.Count);
 
-            bool assignable = DecoGroupActions.TryResolveAssignment(target.Key, DecoGroupState.GroupSet.Event, out DecoGroupActions.GroupAssignment assignment);
+            // 要改归属的 = 现在不在目标组里的那些
+            var reassign = new List<int>();
+            for (int i = 0; i < moving.Count; i++)
+                if (!IsInPagerGroup(moving[i], target.Key))
+                    reassign.Add(moving[i]);
+            DecoGroupActions.GroupAssignment assignment = default;
+            if (reassign.Count > 0 && !TryResolvePagerAssignment(target.Key, stack[draggingIndex], out assignment))
+            {
+                LogMultiEdit("拖动忽略：落点 " + target.Key + " 对这类事件写不进去（没有可写的分组标签属性）");
+                return;
+            }
 
+            bool anchorInMoving = !target.IsHeaderDrop && moving.Contains(target.AnchorIndex);
             LevelEvent anchor = null;
             bool before = target.Before;
-            if (!target.IsHeaderDrop && target.AnchorIndex >= 0 && target.AnchorIndex < stack.Count && !moving.Contains(target.AnchorIndex))
+            if (!anchorInMoving)
             {
-                anchor = stack[target.AnchorIndex];
-            }
-            else
-            {
-                anchor = FindGroupLastEvent(stack, target.Key, moving);
-                before = false;   // 组头 = 插到该组末尾
+                if (!target.IsHeaderDrop && target.AnchorIndex >= 0 && target.AnchorIndex < stack.Count)
+                {
+                    anchor = stack[target.AnchorIndex];
+                }
+                else
+                {
+                    anchor = FindGroupLastEvent(stack, target.Key, moving);
+                    before = false;   // 组头 = 插到该组末尾
+                }
             }
 
-            bool changed = false;
+            // 干算：哪些事件的归属真的要改；排序会不会真的改变顺序
+            var toAssign = new List<LevelEvent>();
+            for (int i = 0; i < reassign.Count; i++)
+            {
+                LevelEvent evt = stack[reassign[i]];
+                if (evt != null && DecoGroupActions.NeedsChange(evt, assignment, DecoGroupState.GroupSet.Event))
+                    toAssign.Add(evt);
+            }
+            List<LevelEvent> movingEvents = null;
+            int insertAt = -1;
+            bool move = !anchorInMoving && TryPlanMove(editor, stack, moving, anchor, before, out movingEvents, out insertAt);
+            if (toAssign.Count == 0 && !move)
+                return;                            // 落在自己身上 / 已经在目标位置 / 归属本来就是这个组：不留撤销点
+
+            // 选中集按对象记下来：排序/改归属之后下标会变
+            var selectedBefore = new List<LevelEvent>();
+            foreach (int index in selectedIndices)
+                if (index >= 0 && index < stack.Count && stack[index] != null)
+                    selectedBefore.Add(stack[index]);
+
             try
             {
                 using (new SaveStateScope(editor, false, true, false))
                 {
-                    if (assignable)
-                    {
-                        for (int i = 0; i < moving.Count; i++)
-                        {
-                            LevelEvent evt = stack[moving[i]];
-                            if (!DecoGroupActions.NeedsChange(evt, assignment, DecoGroupState.GroupSet.Event))
-                                continue;
-                            DecoGroupActions.ApplyAssignment(evt, assignment, DecoGroupState.GroupSet.Event);
-                            changed = true;
-                        }
-                    }
-                    if (MoveInLevelEvents(editor, stack, moving, anchor, before))
-                        changed = true;
+                    for (int i = 0; i < toAssign.Count; i++)
+                        DecoGroupActions.ApplyAssignment(toAssign[i], assignment, DecoGroupState.GroupSet.Event);
+                    if (move)
+                        ApplyMove(editor, movingEvents, insertAt);
                 }
             }
             catch (Exception e)
@@ -3227,15 +3450,18 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 return;
             }
 
-            if (!changed)
-                return;
-
-            selectedIndices.Clear();
+            RemapSelectionAfterDrop(editor, selectedBefore);
             ReloadRows();
 
-            // 归属变了的话，让右侧面板跟着刷新一次（tag 显示等）
-            if (assignable && currentEvent != null && currentStack != null)
+            if (HasBatch())
             {
+                // 批量态：realEvents 还是这批对象，但归属/顺序变了 ⇒ 按新数据重建 fake 并挂回面板
+                // （不重复提示"已选择 N 个"）；选中集已按对象重映射，与批量保持一致
+                ApplySelectionToPanel(false);
+            }
+            else if (toAssign.Count > 0 && currentEvent != null && currentStack != null)
+            {
+                // 归属变了的话，让右侧面板跟着刷新一次（eventTag 显示等）
                 int index = currentStack.IndexOf(currentEvent);
                 if (index >= 0)
                 {
@@ -3243,6 +3469,81 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     try { openTab?.panel?.ShowPanel(openTab.levelEventType, index); }
                     catch { }
                 }
+            }
+        }
+
+        /// <summary>这次拖动要移动哪些行（stack 下标，升序 = 数组顺序）：拖的是选中行 ⇒ 整个选中集，否则只有它自己。</summary>
+        private static List<int> CollectMovingIndices(int draggingIndex, int stackCount)
+        {
+            var moving = new List<int>();
+            if (selectedIndices.Contains(draggingIndex))
+            {
+                for (int i = 0; i < stackCount; i++)
+                    if (selectedIndices.Contains(i))
+                        moving.Add(i);
+            }
+            else
+            {
+                moving.Add(draggingIndex);
+            }
+            moving.Sort();
+            return moving;
+        }
+
+        private static bool IsInPagerGroup(int index, string key)
+        {
+            return groupKeyByIndex.TryGetValue(index, out string owner) && owner == key;
+        }
+
+        /// <summary>
+        /// 落点 → 归属语义（在 `DecoGroupActions.TryResolveAssignment` 之上补一条）：要写**分组标签**的落点
+        /// （按标签的组 / 填了 tag 的自定义分组）只有在这类事件确实有分组标签属性时才有效 ——
+        /// `GroupTagKeyOf` 为 null（没注册 eventTag）的事件写不进去，分组读取那边也把它们当成无标签。
+        /// 手动归属 / 清除归属不受影响。
+        /// </summary>
+        private static bool TryResolvePagerAssignment(string key, LevelEvent sample, out DecoGroupActions.GroupAssignment assignment)
+        {
+            if (!DecoGroupActions.TryResolveAssignment(key, DecoGroupState.GroupSet.Event, out assignment))
+                return false;
+            if (assignment.Kind == DecoGroupActions.GroupAssignKind.Tag
+                && DecoGroupActions.GroupTagKeyOf(sample, DecoGroupState.GroupSet.Event) == null)
+                return false;
+            return true;
+        }
+
+        /// <summary>拖动反馈用：这个落点松手后会不会有效（全在目标组里 = 纯排序，总是有效；否则要能改归属）。</summary>
+        private static bool IsDropAcceptable(int draggingIndex, DropTarget target)
+        {
+            if (currentStack == null || draggingIndex < 0 || draggingIndex >= currentStack.Count || string.IsNullOrEmpty(target.Key))
+                return false;
+            List<int> moving = CollectMovingIndices(draggingIndex, currentStack.Count);
+            for (int i = 0; i < moving.Count; i++)
+                if (!IsInPagerGroup(moving[i], target.Key))
+                    return TryResolvePagerAssignment(target.Key, currentStack[draggingIndex], out _);
+            return true;
+        }
+
+        /// <summary>拖动生效后把选中集按对象映射到新下标（顺序变了下标就变了），当前行的 eventIndex 也跟上。</summary>
+        private static void RemapSelectionAfterDrop(scnEditor editor, List<LevelEvent> selectedBefore)
+        {
+            List<LevelEvent> after = null;
+            try { after = openTab != null ? editor.GetSelectedFloorEvents(openTab.levelEventType) : null; }
+            catch { }
+            selectedIndices.Clear();
+            selectionAnchor = -1;
+            if (after == null)
+                return;
+            for (int i = 0; i < selectedBefore.Count; i++)
+            {
+                int index = after.IndexOf(selectedBefore[i]);
+                if (index >= 0)
+                    selectedIndices.Add(index);
+            }
+            if (currentEvent != null)
+            {
+                int current = after.IndexOf(currentEvent);
+                if (current >= 0)
+                    openTab.eventIndex = current;
             }
         }
 
@@ -3263,59 +3564,73 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// 把事件在 `levelData.levelEvents` 里移到锚点之前/之后（`anchor == null` ⇒ 追加到末尾）。
         /// 数组顺序 = 每块砖上事件的执行顺序；事件按砖、按类型在数组里与别的事件交错，
         /// 所以这里动的是**数组绝对位置**（紧贴锚点），见 §16.3。
+        ///
+        /// 分两步：这里只**干算**（在副本上做一遍"移除 → 插到锚点旁"，与原数组逐个按引用比较），
+        /// 结果与现状完全一样就返回 false（多选整批已经连在锚点旁、落在自己原位等 ⇒ 不留撤销点）；
+        /// 真正改数组的是 <see cref="ApplyMove"/>（`insertAt` 是"移除正在移动的事件之后"的下标）。
         /// </summary>
-        private static bool MoveInLevelEvents(scnEditor editor, List<LevelEvent> stack, List<int> moving, LevelEvent anchor, bool before)
+        private static bool TryPlanMove(scnEditor editor, List<LevelEvent> stack, List<int> moving, LevelEvent anchor, bool before,
+            out List<LevelEvent> movingEvents, out int insertAt)
         {
+            movingEvents = null;
+            insertAt = -1;
             var list = editor.levelData != null ? editor.levelData.levelEvents as List<LevelEvent> : null;
-            if (list == null || list.Count == 0)
+            if (list == null || list.Count == 0 || moving.Count == 0)
                 return false;
 
-            var movingEvents = new List<LevelEvent>(moving.Count);
+            var events = new List<LevelEvent>(moving.Count);
             for (int i = 0; i < moving.Count; i++)
             {
                 LevelEvent evt = stack[moving[i]];
                 if (evt == null || !list.Contains(evt))
                     return false;
-                movingEvents.Add(evt);
+                events.Add(evt);
             }
 
-            if (anchor != null && movingEvents.Count == 1)
-            {
-                int from = list.IndexOf(movingEvents[0]);
-                int anchorIdx = list.IndexOf(anchor);
-                if (anchorIdx >= 0)
-                {
-                    int target = before ? anchorIdx : anchorIdx + 1;
-                    if (target > from)
-                        target--;
-                    if (target == from)
-                        return false;   // 已经在目标位置
-                }
-            }
-            else if (anchor == null)
-            {
-                int last = list.IndexOf(movingEvents[movingEvents.Count - 1]);
-                if (last == list.Count - 1)
-                    return false;       // 已经在末尾
-            }
-
-            for (int i = 0; i < movingEvents.Count; i++)
-                list.Remove(movingEvents[i]);
-
-            int insertAt;
+            var planned = new List<LevelEvent>(list);
+            for (int i = 0; i < events.Count; i++)
+                planned.Remove(events[i]);
+            int at;
             if (anchor == null)
             {
-                insertAt = list.Count;
+                at = planned.Count;
             }
             else
             {
-                int anchorIdx = list.IndexOf(anchor);
-                insertAt = anchorIdx < 0 ? list.Count : (before ? anchorIdx : anchorIdx + 1);
+                int anchorIdx = planned.IndexOf(anchor);
+                at = anchorIdx < 0 ? planned.Count : (before ? anchorIdx : anchorIdx + 1);
             }
+            at = Mathf.Clamp(at, 0, planned.Count);
+            planned.InsertRange(at, events);
+
+            bool changed = false;
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (!ReferenceEquals(list[i], planned[i]))
+                {
+                    changed = true;
+                    break;
+                }
+            }
+            if (!changed)
+                return false;                      // 顺序与现状一致：不用动
+
+            movingEvents = events;
+            insertAt = at;
+            return true;
+        }
+
+        /// <summary>按 <see cref="TryPlanMove"/> 的结果真正改 `levelData.levelEvents`（先移除，再在 insertAt 处按原相对顺序插回）。</summary>
+        private static void ApplyMove(scnEditor editor, List<LevelEvent> movingEvents, int insertAt)
+        {
+            var list = editor.levelData != null ? editor.levelData.levelEvents as List<LevelEvent> : null;
+            if (list == null || movingEvents == null)
+                return;
+            for (int i = 0; i < movingEvents.Count; i++)
+                list.Remove(movingEvents[i]);
             insertAt = Mathf.Clamp(insertAt, 0, list.Count);
             for (int i = 0; i < movingEvents.Count; i++)
                 list.Insert(insertAt + i, movingEvents[i]);
-            return true;
         }
 
         /// <summary>弹窗所在画布的相机（ScreenSpaceOverlay 时返回 null）。</summary>
@@ -3811,16 +4126,33 @@ namespace ADOFAIEditorExtension.Features.PagerList
             hostRT.sizeDelta = new Vector2(width, wanted);
         }
 
-        /// <summary>显示弹窗窗口（照 MultiTrackHelper 的消息弹窗做法：先摘出去，再打开窗口，最后挂回）。</summary>
-        private static void ShowWindow()
+        /// <summary>
+        /// 显示弹窗窗口（照 MultiTrackHelper 的消息弹窗做法：先摘出去，再打开窗口，最后挂回）。
+        ///
+        /// 返回 false = 原版没能进入弹窗态：`ShowPopup(true, …)` 开头就是
+        /// `if (popupIsAnimating &amp;&amp; show) return;`（IL 核过，`showingPopup` 在这句之后才赋值），
+        /// 那时窗口虽然显示得出来，但 `showingPopup` 仍是 false ⇒ 非模态、原版快捷键照跑、我们的快捷键又不接管。
+        /// 所以动画中就不调它，调完再核一次标志；失败时窗口收回（调用方负责其余状态）。
+        /// </summary>
+        private static bool ShowWindow()
         {
             scnEditor editor = scnEditor.instance;
             if (editor == null || popupRoot == null)
-                return;
+                return false;
 
+            bool animating = EditorPopupAnimating(editor);
             popupRoot.transform.SetParent(null, false);
             popupRoot.SetActive(true);
-            editor.ShowPopup(true, (scnEditor.PopupType)233, false);
+            if (!animating)
+                editor.ShowPopup(true, (scnEditor.PopupType)233, false);
+            // 标志读不到（字段改名等）时按"已生效"处理：宁可沿用旧行为，也别让弹窗从此打不开
+            bool shown = !animating;
+            try
+            {
+                if (shown && editor.Get("showingPopup") is bool showing && !showing)
+                    shown = false;
+            }
+            catch { }
 
             // 原版 popupWindow 是“贴顶容器”（实测弹窗落在屏幕顶部、压住关卡名栏），所以不要挂回它，
             // 改成挂到 Canvas 下、锚定 Canvas 正中心；显示/隐藏的窗口动画仍由上面的 ShowPopup 负责。
@@ -3828,6 +4160,11 @@ namespace ADOFAIEditorExtension.Features.PagerList
             Canvas canvas = ResolveCanvas();
             Transform parent = canvas != null ? canvas.transform : editor.popupWindow.transform;
             popupRoot.transform.SetParent(parent, false);
+            if (!shown)
+            {
+                popupRoot.SetActive(false);        // 挂回原处再收起，下次打开照常走上面的流程
+                return false;
+            }
 
             var popupRect = (RectTransform)popupRoot.transform;
             popupRect.anchorMin = new Vector2(0.5f, 0.5f);
@@ -3839,6 +4176,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             popupRoot.transform.SetAsLastSibling();
 
             LayoutList();
+            return true;
         }
 
         /// <summary>弹窗所在 Canvas（编辑器 UI 根）。找不到就退回 popupWindow。</summary>

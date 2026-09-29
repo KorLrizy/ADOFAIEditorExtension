@@ -39,8 +39,10 @@ namespace ADOFAIEditorExtension.Patches
 
             // 分组行的 tag 输入框：原版会按 "editor.<事件名>.<字段名>.placeholder" 取占位符，
             // 这里把带行号的键统一映射到 aee.group.tagPlaceholder，就地提示"留空 = 无 tag 装饰"。
+            // 装饰那套字段名是 groupTagN、事件那套是 eventGroupTagN（大写 G），两种都要认。
             if (key.EndsWith(".placeholder", StringComparison.Ordinal)
-                && key.IndexOf("groupTag", StringComparison.Ordinal) >= 0 && Main.Localizations != null)
+                && (key.IndexOf(".groupTag", StringComparison.Ordinal) >= 0 || key.IndexOf(".eventGroupTag", StringComparison.Ordinal) >= 0)
+                && Main.Localizations != null)
             {
                 string hint = Main.Localizations.GetValue("aee.group.tagPlaceholder");
                 if (!string.IsNullOrEmpty(hint))
@@ -94,7 +96,12 @@ namespace ADOFAIEditorExtension.Patches
         }
     }
 
-    /// <summary>选砖为空时本模组类型也要拿到一个空表（原版对设置型类型返回 null）。</summary>
+    /// <summary>
+    /// 本模组类型始终拿到一个空表、不走原版。
+    /// 原版（IL）：GetSelectedFloorEvents(t) = GetFloorEvents(selectedFloors[0].seqID, t)，
+    /// 而 GetFloorEvents 对 IsSetting(t) 直接返回 null（812 被上面的补丁算作设置型）；
+    /// 没有选砖时 selectedFloors[0] 还会越界抛异常。设置型类型本来就没有"砖上的事件"，空表即可。
+    /// </summary>
     [HarmonyPatch(typeof(scnEditor), "GetSelectedFloorEvents")]
     internal static class scnEditorGetSelectedFloorEventsPatch
     {
@@ -102,13 +109,8 @@ namespace ADOFAIEditorExtension.Patches
         {
             if ((int)eventType != Main.ModEventType)
                 return true;
-            if (scnEditor.instance == null || scnEditor.instance.selectedFloors == null
-                || scnEditor.instance.selectedFloors.Count == 0 || __result == null)
-            {
-                __result = new List<LevelEvent>();
-                return false;
-            }
-            return true;
+            __result = new List<LevelEvent>();
+            return false;
         }
     }
 
@@ -121,9 +123,16 @@ namespace ADOFAIEditorExtension.Patches
             if ((int)__instance.levelEventType != Main.ModEventType)
                 return;
 
-            Main.activeChilden();
-            if (!selected)
-                DecoGroupRenderer.RefreshList();
+            try
+            {
+                Main.activeChilden();
+                if (!selected)
+                    DecoGroupRenderer.RefreshList();
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("标签页选中回调异常: " + e);
+            }
         }
     }
 
@@ -183,8 +192,9 @@ namespace ADOFAIEditorExtension.Patches
             GCS.levelEventIcons[(LevelEventType)Main.Aee.type] = Main.Aee.icon;
             GCS.settingsInfo[Main.Aee.name] = levelEventInfo;
 
-            // "写入关卡文件"开启时，把分组归属键注册成各事件类型的 invisible 属性（§18.2）：
+            // 分组归属键**始终**注册成 invisible 属性（装饰类型 aeeGroupDeco / 砖上事件类型 aeeGroupEvent，§18.2）：
             // 原版 Encode/Decode 只认注册过的键，不注册的话写在 data 里的键既存不下去也读不回来。
+            // "写入关卡文件"开关只决定保存时写不写（保存前置补丁按开关剥离），不再决定注册与否。
             Features.DecoGrouping.DecoGroupState.EnsureInvisibleProperties();
 
             // 事件备注（§21）：这个键**始终**注册且**要显示**（原版面板自动多出一行输入框），
@@ -239,6 +249,15 @@ namespace ADOFAIEditorExtension.Patches
         /// <summary>
         /// 关闭模组时移除注入到 GCS 的静态数据。这些字典跨场景重载仍然存在，
         /// 不清掉的话即使编辑器重启，我们的“关卡事件类型/标题/图标”仍然残留。
+        /// levelEventIcons 只摘我们自己的类型；若该表是 Inject() 新建的，留着也无妨（里面都是原版图标）。
+        ///
+        /// 注册进各事件类型的属性（事件备注 aeeNote、分组归属键）**不摘**，只把 aeeNote 标成 invisible
+        /// （原版 PropertyInfo.CheckIfShown / PropertyControl.SetShown 认这个标记 ⇒ 面板不再显示“备注”行）：
+        ///  - 原版 Encode 只写注册过的键、Decode 只读注册过的键 ⇒ 摘掉注册后，禁用状态下保存/读档会把
+        ///    关卡里的备注与归属**永久抹掉**；
+        ///  - 原版多选 InspectorPanel.ShowPanel 对 data 的每个键做 propertiesInfo[key] ⇒ 事件 data 里还带着
+        ///    这些键（例如用户取消了"未保存"提示、编辑器没重启）时，摘掉注册会直接抛 KeyNotFound。
+        /// 重新启用时 EventNote.EnsureRegistered 会把 invisible 复位。
         /// </summary>
         internal static void RemoveInjection()
         {
@@ -247,6 +266,7 @@ namespace ADOFAIEditorExtension.Patches
             GCS.settingsInfo?.Remove(Main.Aee.name);
             GCS.levelEventTypeString?.Remove((LevelEventType)Main.Aee.type);
             GCS.levelEventIcons?.Remove((LevelEventType)Main.Aee.type);
+            Features.Notes.EventNote.SetHidden(true);
         }
     }
 
@@ -292,6 +312,9 @@ namespace ADOFAIEditorExtension.Patches
     [HarmonyPatch(typeof(InspectorPanel), "ShowPanel")]
     internal static class InspectorPanelShowPanelPatch
     {
+        /// <summary>InspectorPanel.showingPanel 是 private bool，缓存一次 FieldInfo。</summary>
+        private static readonly FieldInfo ShowingPanelField = AccessTools.Field(typeof(InspectorPanel), "showingPanel");
+
         internal static bool Prefix(InspectorPanel __instance, LevelEventType eventType, int eventIndex = 0)
         {
             if ((int)eventType != Main.ModEventType)
@@ -301,7 +324,7 @@ namespace ADOFAIEditorExtension.Patches
             if (levelEvent == null)
                 return true;
 
-            FieldInfo showingPanelField = AccessTools.Field(typeof(InspectorPanel), "showingPanel");
+            FieldInfo showingPanelField = ShowingPanelField;
             showingPanelField?.SetValue(__instance, true);
             scnEditor editor = scnEditor.instance;
             // 与原版 ShowPanel 一致：SaveStateScope(editor, false, false, false) —— 只压 changingState、不调 SaveState。
@@ -353,8 +376,16 @@ namespace ADOFAIEditorExtension.Patches
 
         internal static void Postfix(InspectorPanel __instance, LevelEventType eventType, int eventIndex = 0)
         {
-            if ((int)eventType == Main.ModEventType)
+            if ((int)eventType != Main.ModEventType)
+                return;
+            try
+            {
                 Main.activeChilden();
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("ShowPanel 后置补丁异常: " + e);
+            }
         }
     }
 }

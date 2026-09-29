@@ -19,6 +19,9 @@ namespace ADOFAIEditorExtension.Patches
     [HarmonyPatch(typeof(PropertiesPanel), "RenderControl")]
     internal static class RenderControlPatch
     {
+        /// <summary>PropertiesPanel.UpdateEnabledButton(Property, bool) 是 private，缓存一次，免得每次点击都走 AccessTools。</summary>
+        private static readonly MethodInfo UpdateEnabledButtonMethod = AccessTools.Method(typeof(PropertiesPanel), "UpdateEnabledButton");
+
         internal static bool Prefix(PropertiesPanel __instance, string propertyKey, ADOFAI.PropertyInfo propertyInfo)
         {
             // 分组归属键（invisible 属性）不建控件 ⇒ SetProperties 的循环里 properties 表没有它 ⇒ 面板不会多出行
@@ -41,8 +44,8 @@ namespace ADOFAIEditorExtension.Patches
             property.control.propertyInfo = propertyInfo;
             property.control.propertiesPanel = __instance;
             property.control.propertyTransform = property.GetComponent<RectTransform>();
-            property.control.Setup(true);
 
+            // 原版 RenderControl 只在帮助按钮之后调用一次 control.Setup(true)（IL_0A6C），这里保持同样的顺序与次数
             string key2 = "editor." + property.key + ".help";
             string helpString = RDString.GetWithCheck(key2, out bool flag4, null);
             if (flag4)
@@ -86,8 +89,7 @@ namespace ADOFAIEditorExtension.Patches
                     property.enabledCheckmark.SetActive(!flag5);
                     property.control.gameObject.SetActive(!flag5);
                     property.control.OnValueChange();
-                    MethodInfo method = AccessTools.Method(typeof(PropertiesPanel), "UpdateEnabledButton");
-                    method.Invoke(__instance, new object[] { property, flag5 });
+                    UpdateEnabledButtonMethod?.Invoke(__instance, new object[] { property, flag5 });
                     if (isFake)
                     {
                         property.enabledCheckmark.transform.parent.gameObject.SetActive(false);
@@ -133,6 +135,19 @@ namespace ADOFAIEditorExtension.Patches
 
         internal static void Postfix(object __instance)
         {
+            // 这是挂在所有 PropertyControl.Setup 上的后置补丁：模组侧的异常一律吞掉记日志，不能打断原版面板构建
+            try
+            {
+                Apply(__instance);
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("Export 控件 Setup 后置补丁异常: " + e);
+            }
+        }
+
+        private static void Apply(object __instance)
+        {
             ADOFAI.PropertyInfo info = __instance.Get<ADOFAI.PropertyInfo>("propertyInfo");
             if (info == null || !(info.value_default is UnityAction action))
                 return;
@@ -168,14 +183,19 @@ namespace ADOFAIEditorExtension.Patches
         }
     }
 
-    /// <summary>回车不应触发面板上的“添加/删除分组”按钮。</summary>
+    /// <summary>回车不应触发面板上的“添加/删除分组”按钮（装饰 deleteGroupN 与事件 eventDeleteGroupN 两套）。</summary>
     [HarmonyPatch(typeof(UnityEngine.UI.Button), "OnSubmit")]
     internal static class ButtonOnSubmitPatch
     {
         internal static bool Prefix(UnityEngine.UI.Button __instance)
         {
+            // 全局补丁（所有 Button 回车都会经过），只做几次序数字符串比较
             string name = __instance.name;
-            if (name == "addGroup" || name.StartsWith("deleteGroup", StringComparison.Ordinal))
+            if (name == null)
+                return true;
+            if (name == "addGroup"
+                || name.StartsWith("deleteGroup", StringComparison.Ordinal)
+                || name.StartsWith("eventDeleteGroup", StringComparison.Ordinal))
                 return false;
             return true;
         }
@@ -212,13 +232,23 @@ namespace ADOFAIEditorExtension.Patches
                 return;
             if ((int)___propertyInfo.levelEventInfo.type != Main.Aee.type)
                 return;
-            if (__instance.GetType() == typeof(ADOFAI.LevelEditor.Controls.PropertyControl_Toggle) && __instance.Get<bool>("settingText"))
-                return;
+            try
+            {
+                // 非泛型 Get + is 判断：成员缺失时拿到 null 也不会在这里抛异常
+                if (__instance.GetType() == typeof(ADOFAI.LevelEditor.Controls.PropertyControl_Toggle)
+                    && __instance.Get("settingText") is bool settingText && settingText)
+                    return;
 
-            LevelEvent levelEvent = ___propertiesPanel.inspectorPanel != null ? ___propertiesPanel.inspectorPanel.selectedEvent : null;
-            if (levelEvent == null)
-                return;
-            Main.OnSettingChanged(levelEvent, ___propertyInfo.name, null, levelEvent[___propertyInfo.name]);
+                LevelEvent levelEvent = ___propertiesPanel.inspectorPanel != null ? ___propertiesPanel.inspectorPanel.selectedEvent : null;
+                if (levelEvent == null)
+                    return;
+                Main.OnSettingChanged(levelEvent, ___propertyInfo.name, null, levelEvent[___propertyInfo.name]);
+            }
+            catch (Exception e)
+            {
+                // 模组侧的刷新失败不能冒进原版 SetValue / SelectVar
+                Main.Logger?.Log("设置值变化回调异常: " + e);
+            }
         }
     }
 
@@ -247,17 +277,35 @@ namespace ADOFAIEditorExtension.Patches
             if ((int)___propertyInfo.levelEventInfo.type != Main.Aee.type)
                 return;
 
-            TMP_InputField inputField = __instance.Get<TMP_InputField>("inputField");
-            if (inputField == null)
-                return;
+            try
+            {
+                TMP_InputField inputField = __instance.Get<TMP_InputField>("inputField");
+                if (inputField == null)
+                    return;
 
-            if (hooked.TryGetValue(inputField, out UnityAction<string> previous) && previous != null)
-                inputField.onEndEdit.RemoveListener(previous);
+                if (hooked.TryGetValue(inputField, out UnityAction<string> previous) && previous != null)
+                    inputField.onEndEdit.RemoveListener(previous);
 
-            string key = ___propertyInfo.name;
-            UnityAction<string> listener = value => Main.OnSettingChanged(Main.GetSettingsEvent(), key, null, value);
-            inputField.onEndEdit.AddListener(listener);
-            hooked[inputField] = listener;
+                string key = ___propertyInfo.name;
+                UnityAction<string> listener = value =>
+                {
+                    // onEndEdit 由原版输入框触发，同样不能让模组异常冒出去
+                    try
+                    {
+                        Main.OnSettingChanged(Main.GetSettingsEvent(), key, null, value);
+                    }
+                    catch (Exception e)
+                    {
+                        Main.Logger?.Log("文本设置变化回调异常: " + e);
+                    }
+                };
+                inputField.onEndEdit.AddListener(listener);
+                hooked[inputField] = listener;
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("文本控件 Setup 后置补丁异常: " + e);
+            }
         }
     }
 
@@ -267,8 +315,16 @@ namespace ADOFAIEditorExtension.Patches
     {
         internal static void Postfix(LevelEvent levelEvent, bool checkIfEnabled = true)
         {
-            if (levelEvent != null && (int)levelEvent.eventType == Main.ModEventType)
+            if (levelEvent == null || (int)levelEvent.eventType != Main.ModEventType)
+                return;
+            try
+            {
                 Main.activeChilden();
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("SetProperties 后置补丁异常: " + e);
+            }
         }
     }
 }

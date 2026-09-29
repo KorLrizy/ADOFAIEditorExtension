@@ -47,18 +47,25 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             if (events.Count == 0)
                 return;
 
-            editor.DeselectAllDecorations();
-            editor.DeselectFloors(false);
-
             int selected = 0;
-            for (int i = 0; i < events.Count; i++)
+            // 与原版 SelectItemsInRange 一样只压一个外层 SaveStateScope：里面每次 SelectDecoration
+            // 自带的 scope 因 changingState > 0 不再各自存状态 ⇒ 整组选择只占一个撤销点。
+            // 参数取 SelectDecoration 自己那套 (false, false)：纯选择，不置"未保存"（IL：SaveState 第二个参数 = dataHasChanged）
+            using (new SaveStateScope(editor, false, false, false))
             {
-                LevelEvent e = events[i];
-                if (e == null || scrDecorationManager.GetDecoration(e) == null)
-                    continue;
-                // ignoreDeselection：累加选择；ignoreAdjustRect：先不动面板，最后统一刷新
-                editor.SelectDecoration(e, false, false, true, true);
-                selected++;
+                // 点组名 = "选中这一组"（替换选区），不是累加
+                editor.DeselectAllDecorations();
+                editor.DeselectFloors(false);
+
+                for (int i = 0; i < events.Count; i++)
+                {
+                    LevelEvent e = events[i];
+                    if (e == null || scrDecorationManager.GetDecoration(e) == null)
+                        continue;
+                    // ignoreDeselection：累加选择；ignoreAdjustRect：先不动面板，最后统一刷新
+                    editor.SelectDecoration(e, false, false, true, true);
+                    selected++;
+                }
             }
             if (selected == 0)
                 return;
@@ -180,9 +187,20 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             LevelEvent insertAnchor = anchor;
             if (insertAnchor == null)
             {
-                // 落在组头上 ⇒ 插到该组末尾：锚点取"下一组第一行"（没有就追加到装饰数组末尾）
-                insertAnchor = DecoGroupState.NextEventAfterGroup(groupKey);
-                insertBefore = true;
+                // 落在组头上 ⇒ 插到该组末尾。组成员在装饰数组里**不一定连续**（分组显示是按规则重排的），
+                // 锚在"下一组第一行之前"可能落进本组中间 ⇒ 锚点取本组最后一个成员、插到它后面；
+                // 组是空的才退回"下一组第一行之前"（没有下一行就追加到装饰数组末尾）
+                LevelEvent last = DecoGroupState.LastEventOfGroup(groupKey);
+                if (last != null)
+                {
+                    insertAnchor = last;
+                    insertBefore = false;
+                }
+                else
+                {
+                    insertAnchor = DecoGroupState.NextEventAfterGroup(groupKey);
+                    insertBefore = true;
+                }
             }
 
             bool moved;
@@ -335,12 +353,23 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             ApplyAssignment(levelEvent, assignment, DecoGroupState.GroupSet.Decoration);
         }
 
+        /// <remarks>
+        /// 标签写到 <see cref="GroupTagKeyOf"/> 给出的属性上（装饰 "tag"、砖上事件 "eventTag"）。
+        /// 该事件类型没有标签属性（返回 null）时：Tag 什么都不做（它进不了按 tag 匹配的组，
+        /// <see cref="NeedsChange(LevelEvent, GroupAssignment, DecoGroupState.GroupSet)"/> 也返回 false）；
+        /// Clear 只清手动归属、不写任何标签键。
+        /// </remarks>
         internal static void ApplyAssignment(LevelEvent levelEvent, GroupAssignment assignment, DecoGroupState.GroupSet set)
         {
+            if (levelEvent == null)
+                return;
+            string tagKey = GroupTagKeyOf(levelEvent, set);
             switch (assignment.Kind)
             {
                 case GroupAssignKind.Tag:
-                    levelEvent["tag"] = assignment.Tag;
+                    if (tagKey == null)
+                        break;   // 没有标签属性：写不进去，也就不动手动归属
+                    levelEvent[tagKey] = assignment.Tag;
                     DecoGroupState.ClearManualGroup(levelEvent, set);
                     break;
                 case GroupAssignKind.Manual:
@@ -352,7 +381,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                     DecoGroupState.ClearManualGroup(levelEvent, set);
                     break;
                 default:
-                    levelEvent["tag"] = "";
+                    if (tagKey != null)
+                        levelEvent[tagKey] = "";
                     DecoGroupState.ClearManualGroup(levelEvent, set);
                     break;
             }
@@ -362,21 +392,54 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         /// 把装饰在 `levelData.decorations` 里移到锚点之前/之后（`anchor == null` ⇒ 追加到末尾），
         /// 并把装饰对象的 sibling 顺序同步成数组顺序（数组顺序就是绘制顺序，原版拖拽也是这么做的）。
         /// 返回是否真的动了。
+        ///
+        /// 与原版 `PropertyControl_DecorationsList.OnItemDropSides` 一致（r265 IL 已核）：`levelData.decorations`
+        /// 与 `scrDecorationManager.allDecorations` **在同一下标上一起** Remove/Insert。只动前者的话两个数组错位：
+        /// `SaveState` 按 allDecorations 下标记选区、`UndoOrRedo` 用 levelData.decorations[下标] 还原
+        /// ⇒ 撤销后选中的是别的装饰（shift 范围选择、GetDecorationIndex 也都按 allDecorations 算）。
         /// </summary>
         private static bool MoveInDecorations(scnEditor editor, LevelEvent levelEvent, LevelEvent anchor, bool insertBefore)
         {
-            object decorations = editor.levelData != null ? (object)editor.levelData.decorations : null;
-            if (!(decorations is List<LevelEvent> list))
+            DecorationsArray<LevelEvent> decorations = editor.levelData != null ? editor.levelData.decorations : null;
+            if (decorations == null)
                 return false;
-            if (!TryComputeInsertIndex(list, levelEvent, anchor, insertBefore, out int insertIndex))
+            if (!TryComputeInsertIndex(decorations, levelEvent, anchor, insertBefore, out int insertIndex))
                 return false;
 
-            int from = list.IndexOf(levelEvent);
+            int from = decorations.IndexOf(levelEvent);
             if (from < 0)
                 return false;
-            list.RemoveAt(from);
-            InvokeInsert(decorations, Mathf.Clamp(insertIndex, 0, list.Count), levelEvent);
-            return true;
+
+            // 场景侧的装饰对象列表：原版用 GetDecorationIndex（= allDecorations 下标）当插入位，两个数组同步增删
+            List<scrDecoration> all = null;
+            scrDecoration decoration = null;
+            int allFrom = -1;
+            try
+            {
+                all = scrDecorationManager.instance != null ? scrDecorationManager.instance.allDecorations : null;
+                decoration = scrDecorationManager.GetDecoration(levelEvent);
+                allFrom = all != null && decoration != null ? all.IndexOf(decoration) : -1;
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("读取装饰对象列表失败，只重排关卡数据: " + e.Message);
+                all = null;
+            }
+
+            // DecorationsArray 没有重写 RemoveAt（IL 已核：只有 Add / Insert 两个 new 方法 + CallDecorationUpdate），
+            // 这里就是 List.RemoveAt、不回调；下面的 Insert 会回调一次 OnDecorationUpdate，正好覆盖整次移动。
+            decorations.RemoveAt(from);
+            if (allFrom >= 0)
+                all.RemoveAt(allFrom);
+            int index = Mathf.Clamp(insertIndex, 0, decorations.Count);
+            if (allFrom >= 0)
+                all.Insert(Mathf.Clamp(index, 0, all.Count), decoration);   // 先插场景列表：Insert 回调里刷新列表时两边已一致
+            if (InsertDecoration(decorations, index, from, levelEvent))
+                return true;
+            // 关卡数据被放回了原位置：场景列表也放回去，保持两边对齐
+            if (allFrom >= 0 && all.Remove(decoration))
+                all.Insert(Mathf.Clamp(allFrom, 0, all.Count), decoration);
+            return false;
         }
 
         /// <summary>
@@ -412,20 +475,39 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         }
 
         /// <summary>
-        /// 走运行时类型（`DecorationsArray&lt;T&gt;`）的 Insert：它内部会 `CallDecorationUpdate()` 刷新列表。
-        /// 走 `List&lt;T&gt;` 引用的话调不到那个重写，所以这里用反射。
+        /// 调 `DecorationsArray&lt;T&gt;.Insert`（`new` 隐藏而不是 override，所以必须用 DecorationsArray 类型的引用
+        /// 在编译期绑定；它 = `List.Insert` + `CallDecorationUpdate()` 刷新列表）。
+        /// 失败时不能盲目重插：`List.Insert` 可能已经成功、只是后面的回调抛了 ⇒ 先看元素在不在数组里；
+        /// 不在就退回 `List.Insert`，再失败就放回原位置 <paramref name="originalIndex"/>，保证元素既不重复也不丢。
+        /// 返回元素是否已经在新位置上。
         /// </summary>
-        private static void InvokeInsert(object decorations, int index, LevelEvent levelEvent)
+        private static bool InsertDecoration(DecorationsArray<LevelEvent> decorations, int index, int originalIndex, LevelEvent levelEvent)
         {
             try
             {
-                decorations.Method("Insert", new object[] { index, levelEvent });
+                decorations.Insert(index, levelEvent);
+                return true;
             }
             catch (Exception e)
             {
-                Main.Logger?.Log("装饰数组 Insert 失败，退回 List.Insert: " + e.Message);
-                ((List<LevelEvent>)decorations).Insert(index, levelEvent);
+                Main.Logger?.Log("装饰数组 Insert 失败: " + e.Message);
             }
+
+            List<LevelEvent> list = decorations;
+            if (list.Contains(levelEvent))
+                return true;   // 数据已经插进去了（抛异常的是刷新回调），别再插第二次
+            try
+            {
+                list.Insert(Mathf.Clamp(index, 0, list.Count), levelEvent);
+                return true;
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("退回 List.Insert 也失败，装饰放回原位置: " + e.Message);
+            }
+            if (!list.Contains(levelEvent))
+                list.Insert(Mathf.Clamp(originalIndex, 0, list.Count), levelEvent);
+            return false;
         }
 
         /// <summary>装饰的绘制顺序 = `levelData.decorations` 顺序：把场景里装饰对象的分层顺序对齐。</summary>
@@ -459,27 +541,57 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
         internal static bool NeedsChange(LevelEvent levelEvent, GroupAssignment assignment, DecoGroupState.GroupSet set)
         {
+            if (levelEvent == null)
+                return false;
             int manual = DecoGroupState.GetManualGroup(levelEvent, set);
+            string tagKey = GroupTagKeyOf(levelEvent, set);   // null = 该类型没有标签属性（与 ApplyAssignment 同一判定）
             switch (assignment.Kind)
             {
                 case GroupAssignKind.Tag:
-                    return manual >= 0 || !string.Equals(GetTag(levelEvent), assignment.Tag, StringComparison.Ordinal);
+                    if (tagKey == null)
+                        return false;                    // 写不了标签 ⇒ ApplyAssignment 什么都不做
+                    return manual >= 0 || !string.Equals(GetTag(levelEvent, tagKey), assignment.Tag, StringComparison.Ordinal);
                 case GroupAssignKind.Manual:
                     return manual != assignment.Index;
                 case GroupAssignKind.ClearManual:
                     return manual >= 0;                  // 只看手动归属；tag 不动，也就不比 tag
                 default:
-                    return manual >= 0 || GetTag(levelEvent).Length > 0;
+                    return manual >= 0 || (tagKey != null && GetTag(levelEvent, tagKey).Length > 0);
             }
         }
 
-        private static string GetTag(LevelEvent levelEvent)
+        /// <summary>
+        /// 分组用的"标签"属性名（装饰 / 事件两套共用的约定，拖放写入与分组读取都必须走这里）：
+        ///  - 装饰：<c>"tag"</c>（装饰自己的标签）；
+        ///  - 砖上事件：<c>"eventTag"</c>（事件自己的标签）。事件上的 <c>"tag"</c> 是 MoveDecorations /
+        ///    SetText 等的**目标装饰选择器**，绝不能当分组键读写。
+        /// 该事件类型没有注册这个属性时返回 null（⇒ 不能按标签分组/改写，只能手动归属）。
+        /// </summary>
+        internal static string GroupTagKeyOf(LevelEvent levelEvent, DecoGroupState.GroupSet set)
         {
+            string key = set == DecoGroupState.GroupSet.Event ? "eventTag" : "tag";
             if (levelEvent == null)
+                return null;
+            if (set == DecoGroupState.GroupSet.Decoration)
+                return key;
+            try
+            {
+                LevelEventInfo info = levelEvent.info;
+                if (info != null && info.propertiesInfo != null && info.propertiesInfo.ContainsKey(key))
+                    return key;
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>读分组用的标签（属性名由 <see cref="GroupTagKeyOf"/> 决定）。</summary>
+        private static string GetTag(LevelEvent levelEvent, string tagKey)
+        {
+            if (levelEvent == null || string.IsNullOrEmpty(tagKey))
                 return "";
             try
             {
-                if (levelEvent.TryGet<string>("tag", out string tag))
+                if (levelEvent.TryGet<string>(tagKey, out string tag))
                     return tag ?? "";
             }
             catch { }
@@ -535,19 +647,29 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             if (picks.Count == 0)
                 return false;
 
-            editor.DeselectAllDecorations();
-            editor.DeselectFloors(false);
-            for (int i = 0; i < picks.Count; i++)
-                editor.SelectDecoration(picks[i], false, false, true, true);   // 累加选择，先不刷面板
-
-            // 锚点钉住不动（与分页器 §26.2 同一套习惯：连按 shift 都在同一段上伸缩）——
-            // 但原版 `SelectDecoration` 会把 lastSelectedIndex 改成"最后选中的那个"，这里写回锚点。
-            LevelEvent anchorEvent = SlotEvent(anchorSlot);
-            if (anchorEvent != null)
+            // 与原版 SelectItemsInRange 一致（IL 已核）：整段包在一个 SaveStateScope(editor, false, true, false) 里，
+            // 把范围**加进**现有选区（不 DeselectAll）；点的就是锚点且当前只选了一个 ⇒ 当普通单选处理。
+            using (new SaveStateScope(editor, false, true, false))
             {
-                int anchorGlobal = scrDecorationManager.GetDecorationIndex(anchorEvent);
-                if (anchorGlobal >= 0)
-                    list.lastSelectedIndex = anchorGlobal;
+                List<LevelEvent> selected = editor.selectedDecorations;
+                if (anchorSlot == clickedSlot && selected != null && selected.Count == 1)
+                {
+                    editor.SelectDecoration(clicked, false, false, false, false);
+                    return true;
+                }
+
+                for (int i = 0; i < picks.Count; i++)
+                    editor.SelectDecoration(picks[i], false, false, true, true);   // 累加选择，先不刷面板
+
+                // 锚点钉住不动（与分页器 §26.2 同一套习惯：连按 shift 都在同一段上伸缩）——
+                // 但原版 `SelectDecoration` 会把 lastSelectedIndex 改成"最后选中的那个"，这里写回锚点。
+                LevelEvent anchorEvent = SlotEvent(anchorSlot);
+                if (anchorEvent != null)
+                {
+                    int anchorGlobal = scrDecorationManager.GetDecorationIndex(anchorEvent);
+                    if (anchorGlobal >= 0)
+                        list.lastSelectedIndex = anchorGlobal;
+                }
             }
 
             // 统一刷新右侧属性面板（多选 ⇒ 原版 fake event / 属性合并，见 §18.1/§29.2）

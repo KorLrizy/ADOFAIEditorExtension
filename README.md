@@ -111,8 +111,8 @@ MSBuild ADOFAIEditorExtension.csproj -p:Configuration=Release -p:GameDir="D:\ste
 - 建议：**分享关卡前先在带 mod 的环境下存一份**；这些键属于扩展数据，不承担玩法逻辑，丢了只影响分组与备注显示。
 - **批量编辑本身不写入任何东西**——它只是把改动落到已有事件字段上。分组归属与备注的落盘统一由上面那个开关（默认关闭）
   与"备注非空"这两条控制，因此**默认配置下关卡文件与原版完全一致**。
-- 分页器直选列表是自建弹窗（克隆原版 `largeOkPopupContainer` + 自建 `ScrollRect`，行按钮克隆
-  `notificationOkButton`），因为原版 `ShowNotificationPopup` 的滚动高度按正文文本定死、且点选项不会关窗。
+- 分页器直选列表是自建弹窗（克隆原版 `okPopupContainer`（缺失时退回 `largeOkPopupContainer`）+ 自建 `ScrollRect`，
+  行克隆装饰列表自己的行 prefab `listItemPool.itemPrefab`），因为原版 `ShowNotificationPopup` 的滚动高度按正文文本定死、且点选项不会关窗。
   如果游戏更新改动了这些预制体，弹窗可能失效——遇到时请在 Issues 里附游戏版本号与复现步骤。
 - 设置项存于标签页自己的 `LevelEvent`，同一进程内跨关卡保留；**重启游戏后回到设置页里的默认值**。
 
@@ -135,7 +135,9 @@ ADOFAI Editor extension\
 ├── Utils\                         Reflections（私有成员访问）、LevelEventEX（UpdatePanel）、Popup
 ├── Patches\
 │   ├── EditorIntegrationPatches.cs   GCS 注入 / ShowPanel 接管 / 本地化与枚举键改写
-│   └── PropertyPanelPatches.cs       Export 按钮渲染 + 字段值变化回调
+│   ├── PropertyPanelPatches.cs       Export 按钮渲染 + 字段值变化回调
+│   ├── LevelEncodePatch.cs           关卡编码（LevelData.Encode）异常记日志的 Finalizer
+│   └── LevelDecodeRegistrationPatch.cs 读档（LevelData.Decode）前确保属性注册 + 读档后自检日志
 ├── Features\DecoGrouping\
 │   ├── DecoGroupState.cs          槽位模型 + 折叠集合 + 组→装饰表 + 自定义分组行 + 手动归属
 │   ├── DecoGroupRenderer.cs       分组构建与 ApplyUpdateList 接管渲染 + 头行对象池 + 落点指示线
@@ -149,7 +151,7 @@ ADOFAI Editor extension\
 │   └── PagerListPatches.cs        Harmony 补丁集（InspectorTab.Init / 选区与面板切换时关闭 / 弹窗快捷键）
 ├── Features\Notes\
 │   └── EventNote.cs               事件备注（aeeNote 属性注册 + 空备注不落盘的 Encode 后置补丁）
-├── Properties\AssemblyInfo.cs     程序集信息与版本（1.0.0.0）
+├── Properties\AssemblyInfo.cs     程序集信息与版本（1.1.0.0）
 ├── LICENSE                        MIT
 └── README.md
 ```

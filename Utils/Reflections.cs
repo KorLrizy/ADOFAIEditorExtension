@@ -19,24 +19,39 @@ namespace ADOFAIEditorExtension.Utils
         private readonly static Dictionary<(Type, string), Delegate> propertyGetters = new Dictionary<(Type, string), Delegate>();
         private readonly static Dictionary<(Type, string), Delegate> propertySetters = new Dictionary<(Type, string), Delegate>();
 
+        // 负缓存：查过确实没有该字段/属性的 (类型, 名字)，之后直接返回，不再每次跑 AccessTools（它找不到时还会打警告日志）
+        private readonly static HashSet<(Type, string)> missingGetters = new HashSet<(Type, string)>();
+        private readonly static HashSet<(Type, string)> missingSetters = new HashSet<(Type, string)>();
+
+        // Method() 的 MethodInfo 缓存（未找到也缓存为 null，调用时照旧抛 MissingMethodException）
+        private readonly static Dictionary<MethodKey, MethodInfo> methods = new Dictionary<MethodKey, MethodInfo>();
+
         public static object Get(this Type type, string name, object instance = null)
         {
             if (fieldGetters.TryGetValue((type, name), out Delegate v1))
                 return v1.DynamicInvoke(instance);
             if (propertyGetters.TryGetValue((type, name), out Delegate v2))
                 return v2.DynamicInvoke(instance);
+            if (missingGetters.Contains((type, name)))
+                return null;
             FieldInfo field = AccessTools.Field(type, name);
             if (field != null)
                 return CreateFieldGetter(type, field).DynamicInvoke(instance);
             PropertyInfo property = AccessTools.Property(type, name);
             if (property != null)
                 return CreatePropertyGetter(type, property).DynamicInvoke(instance);
+            missingGetters.Add((type, name));
             return null;
         }
 
+        /// <summary>
+        /// 泛型读取。成员缺失或值为 null 时返回 default(T)（值类型不再因拆箱 null 而 NRE）；
+        /// 值存在但类型不符时照旧抛 InvalidCastException。
+        /// </summary>
         public static T Get<T>(this Type type, string name, object instance = null)
         {
-            return (T)Get(type, name, instance);
+            object value = Get(type, name, instance);
+            return value == null ? default : (T)value;
         }
 
         public static object Get(this object instance, string name)
@@ -80,6 +95,8 @@ namespace ADOFAIEditorExtension.Utils
                 v2.DynamicInvoke(instance, value);
                 return;
             }
+            if (missingSetters.Contains((type, name)))
+                return;
             FieldInfo field = AccessTools.Field(type, name);
             if (field != null)
             {
@@ -88,7 +105,11 @@ namespace ADOFAIEditorExtension.Utils
             }
             PropertyInfo property = AccessTools.Property(type, name);
             if (property != null)
+            {
                 CreatePropertySetter(type, property).DynamicInvoke(instance, value);
+                return;
+            }
+            missingSetters.Add((type, name));
         }
 
         public static void Set(this object instance, string name, object value)
@@ -120,10 +141,65 @@ namespace ADOFAIEditorExtension.Utils
 
         public static object Method(this Type type, string name, object[] parameters = null, Type[] parameterTypes = null, Type[] genericTypes = null, object instance = null)
         {
-            MethodInfo method = AccessTools.Method(type, name, parameterTypes, genericTypes);
+            var key = new MethodKey(type, name, parameterTypes, genericTypes);
+            if (!methods.TryGetValue(key, out MethodInfo method))
+            {
+                method = AccessTools.Method(type, name, parameterTypes, genericTypes);
+                methods[key] = method;
+            }
             if (method == null)
                 throw new MissingMethodException(type.FullName + "." + name);
             return method.Invoke(instance, parameters);
+        }
+
+        /// <summary>Method() 缓存键：类型 + 方法名 + 参数类型表 + 泛型实参表（数组按元素比较，null 与空表区分开）。</summary>
+        private sealed class MethodKey : IEquatable<MethodKey>
+        {
+            private readonly Type type;
+            private readonly string name;
+            private readonly Type[] parameterTypes;
+            private readonly Type[] genericTypes;
+            private readonly int hash;
+
+            internal MethodKey(Type type, string name, Type[] parameterTypes, Type[] genericTypes)
+            {
+                this.type = type;
+                this.name = name;
+                // 拷一份，防止调用方之后改动传入的数组导致键变化
+                this.parameterTypes = parameterTypes != null ? (Type[])parameterTypes.Clone() : null;
+                this.genericTypes = genericTypes != null ? (Type[])genericTypes.Clone() : null;
+                int h = (type != null ? type.GetHashCode() : 0) * 31 + (name != null ? name.GetHashCode() : 0);
+                h = h * 31 + HashOf(this.parameterTypes);
+                h = h * 31 + HashOf(this.genericTypes);
+                hash = h;
+            }
+
+            private static int HashOf(Type[] types)
+            {
+                if (types == null)
+                    return -1;
+                int h = types.Length;
+                foreach (Type t in types)
+                    h = h * 31 + (t != null ? t.GetHashCode() : 0);
+                return h;
+            }
+
+            private static bool SameTypes(Type[] a, Type[] b)
+            {
+                if (a == null || b == null)
+                    return a == b;
+                return a.SequenceEqual(b);
+            }
+
+            public bool Equals(MethodKey other)
+            {
+                return other != null && type == other.type && name == other.name
+                    && SameTypes(parameterTypes, other.parameterTypes) && SameTypes(genericTypes, other.genericTypes);
+            }
+
+            public override bool Equals(object obj) => Equals(obj as MethodKey);
+
+            public override int GetHashCode() => hash;
         }
 
         public static T Method<T>(this Type type, string name, object[] parameters = null, Type[] parameterTypes = null, Type[] genericTypes = null, object instance = null)

@@ -194,17 +194,40 @@ namespace ADOFAIEditorExtension
 
         private static void StopMod(UnityModManager.ModEntry modEntry)
         {
-            harmony.UnpatchAll(modEntry.Info.Id);
+            // 先收掉直选弹窗：它是 ShowPopup(true, 233) 开的，原版 showingPopup 此时为 true；
+            // 下面的 PagerListController.Reset() 只清引用不收窗，补丁一撤就再也没人把标志放回去
+            // （原版快捷键全部停摆，只剩 Esc 能救）。CloseIfOpen → Close → ShowPopup(false, 233) 会一并复位标志。
+            try { PagerListController.CloseIfOpen(); }
+            catch (Exception e) { Logger?.Log("禁用时关闭直选列表失败: " + e.Message); }
+
+            // 设置改动时已经随时落盘，这里再兜一次（内容没变不会写）
+            Settings.SettingsStore.Save();
+
+            // harmony 为 null：StartMod 从没跑过（例如 UMM 启动时就是禁用态再点一次禁用）
+            harmony?.UnpatchAll(modEntry.Info.Id);
+            harmony = null;
             // 清掉注入到 GCS 的静态数据（跨场景重载仍存在），否则禁用后事件类型/图标仍残留
             Patches.EditorIntegration.RemoveInjection();
             DecoGroupRenderer.ResetStaticState();
             PagerListController.Reset();
         }
 
+        /// <summary>最近一次重启请求的序号：旧请求的"未重启"提示协程发现序号变了就自行作废。</summary>
+        private static int reloadRequestId;
+
+        /// <summary>当前这次重启请求是否已经走到了确认回调（= 编辑器真的会重启）。</summary>
+        private static bool reloadConfirmed;
+
         /// <summary>
         /// 在 UMM 里开关 mod 后重启编辑器并重载当前关卡：本模组在 scnEditor.Awake/Start 时注入标签页/事件类型，
         /// 只有重载编辑器才能干净地加上（开启）或去掉（关闭）这些注入。
         /// 仅在关卡编辑器里生效；有未保存改动时走游戏自带的“未保存”提示，避免静默丢失改动。
+        ///
+        /// 用户在那个提示里点了取消 ⇒ 编辑器不会重启，而补丁已经撤掉 / 刚打上（半新半旧的状态）。
+        /// 原版没有取消回调，所以挂一个协程在编辑器上盯着：提示框关掉后如果确认回调没跑，就记日志并弹一句
+        /// "请重新打开编辑器"。协程挂在 scnEditor 这个 MonoBehaviour 上、弹窗走 <see cref="Popup.ShowMessage"/>
+        /// （原版 ShowPopup + 克隆的确认框，不依赖任何 Harmony 补丁），所以禁用后也能跑；
+        /// 编辑器真的重启时旧 scnEditor 被销毁，协程随之终止，不会误报。
         /// </summary>
         private static void RequestEditorReload()
         {
@@ -214,13 +237,100 @@ namespace ADOFAIEditorExtension
                 if (editor == null)
                     return;
 
-                Logger?.Log("mod 开关切换：请求重启编辑器并重载当前关卡");
-                editor.CheckUnsavedChanges(() => RestartEditorWithWipe(), false);
+                int requestId = ++reloadRequestId;
+                // 刚收掉的弹窗（例如 StopMod 里关的直选列表）还在滑出动画中时，原版 ShowPopup(true, …) 会直接 return，
+                // “未保存”提示就弹不出来 ⇒ 先等动画结束再发请求。
+                if (IsPopupAnimating(editor))
+                    editor.StartCoroutine(RequestWhenPopupSettles(editor, requestId));
+                else
+                    SendReloadRequest(editor, requestId);
             }
             catch (Exception e)
             {
                 Logger?.Log("重启编辑器失败: " + e);
             }
+        }
+
+        private static System.Collections.IEnumerator RequestWhenPopupSettles(scnEditor editor, int requestId)
+        {
+            float deadline = Time.realtimeSinceStartup + 2f;
+            while (editor != null && IsPopupAnimating(editor) && Time.realtimeSinceStartup < deadline)
+                yield return null;
+            if (editor == null || requestId != reloadRequestId)
+                yield break;
+            SendReloadRequest(editor, requestId);
+        }
+
+        private static void SendReloadRequest(scnEditor editor, int requestId)
+        {
+            try
+            {
+                Logger?.Log("mod 开关切换：请求重启编辑器并重载当前关卡");
+                reloadConfirmed = false;
+                editor.CheckUnsavedChanges(() =>
+                {
+                    reloadConfirmed = true;
+                    RestartEditorWithWipe();
+                }, false);
+
+                // 没有未保存改动时回调是同步调用的；到这里还没确认 ⇒ 弹出了“未保存”提示，等用户的选择
+                if (!reloadConfirmed)
+                {
+                    Logger?.Log("有未保存的改动：已弹出游戏的“未保存”提示。若选择取消，编辑器不会重启，" +
+                        "本模组的开关要重新打开编辑器后才完全生效");
+                    editor.StartCoroutine(NotifyIfReloadCancelled(editor, requestId));
+                }
+            }
+            catch (Exception e)
+            {
+                Logger?.Log("重启编辑器失败: " + e);
+            }
+        }
+
+        /// <summary>等“未保存”提示关掉；关掉后确认回调仍没跑（= 用户取消）就提示用户手动重开编辑器。</summary>
+        private static System.Collections.IEnumerator NotifyIfReloadCancelled(scnEditor editor, int requestId)
+        {
+            yield return null;
+            while (editor != null && IsShowingPopup(editor))
+                yield return null;
+            // 确认路径是同步调 RestartScene，场景切换在之后的帧生效：多等两帧，免得在切换前误报
+            yield return null;
+            yield return null;
+            if (editor == null || reloadConfirmed || requestId != reloadRequestId)
+                yield break;
+
+            Logger?.Log("编辑器未重启（取消了“未保存”提示）：请保存后手动重新打开编辑器，mod 开关才会完全生效");
+            float deadline = Time.realtimeSinceStartup + 2f;
+            while (editor != null && IsPopupAnimating(editor) && Time.realtimeSinceStartup < deadline)
+                yield return null;
+            if (editor == null || IsShowingPopup(editor))
+                yield break;      // 用户已经又打开了别的弹窗：不去抢，日志里已经有说明
+            Popup.ShowMessage(ReopenEditorMessage());
+        }
+
+        private static string ReopenEditorMessage()
+        {
+            string text = Localizations?.GetValue("aee.reopenEditor");
+            if (!string.IsNullOrEmpty(text))
+                return text;
+            return RDString.language == SystemLanguage.ChineseSimplified || RDString.language == SystemLanguage.Chinese
+                    || RDString.language == SystemLanguage.ChineseTraditional
+                ? "编辑器没有重启：请保存关卡后重新打开编辑器，ADOFAI Editor Extension 的开关才会完全生效。"
+                : "The editor was not restarted. Save the level and reopen the editor to fully apply the ADOFAI Editor Extension toggle.";
+        }
+
+        /// <summary>原版 <c>scnEditor.showingPopup</c>（private 字段，反射读；读不到按"没有弹窗"处理）。</summary>
+        private static bool IsShowingPopup(scnEditor editor)
+        {
+            try { return editor.Get("showingPopup") is bool showing && showing; }
+            catch { return false; }
+        }
+
+        /// <summary>原版 <c>scnEditor.popupIsAnimating</c>：为 true 时 ShowPopup(true, …) 直接 return。</summary>
+        private static bool IsPopupAnimating(scnEditor editor)
+        {
+            try { return editor.Get("popupIsAnimating") is bool animating && animating; }
+            catch { return false; }
         }
 
         /// <summary>
@@ -247,16 +357,52 @@ namespace ADOFAIEditorExtension
 
         // ------------------------------------------------------------------ 标签页设置值
 
-        /// <summary>取（必要时创建）本模组标签页的 LevelEvent。</summary>
+        /// <summary>
+        /// 取（必要时创建）本模组标签页的 LevelEvent。第一次创建后立刻从 Settings.json 灌回持久化的设置
+        /// （<see cref="Settings.SettingsStore.Load"/>）。
+        ///
+        /// 设置事件整个进程只建一次（值要跨编辑器重载保留），但每次 <c>scnEditor.Awake</c> 的
+        /// <c>EditorIntegration.Inject()</c> 都会往 <c>GCS.settingsInfo</c> 放一份**新的** LevelEventInfo。
+        /// 面板按属性名绑定、<c>SetProperties</c> 按 data 键遍历，所以旧 info 不会直接出错；但事件的
+        /// <c>info</c> 指向已被替换掉的旧对象（禁用再启用后更是指向已从 GCS 移除的那份），
+        /// 原版任何经 <c>selectedEvent.info</c> 取 PropertyInfo 的路径拿到的都是过期对象。
+        /// 这里发现 info 换了就把事件重新绑到当前 info 上（同一个事件对象，data 原样保留）。
+        /// </summary>
         internal static LevelEvent GetSettingsEvent()
         {
-            if (AeeLevelEvent != null)
-                return AeeLevelEvent;
             LevelEventInfo info = null;
-            if (GCS.settingsInfo == null || !GCS.settingsInfo.TryGetValue(ModEventName, out info) || info == null)
+            bool hasInfo = GCS.settingsInfo != null && GCS.settingsInfo.TryGetValue(ModEventName, out info) && info != null;
+            if (AeeLevelEvent != null)
+            {
+                if (hasInfo && !ReferenceEquals(AeeLevelEvent.info, info))
+                    RebindSettingsInfo(AeeLevelEvent, info);
+                return AeeLevelEvent;
+            }
+            if (!hasInfo)
                 return null;
             AeeLevelEvent = new LevelEvent(0, (LevelEventType)ModEventType, info);
+            Settings.SettingsStore.Load();
             return AeeLevelEvent;
+        }
+
+        /// <summary>把设置事件改绑到新的 LevelEventInfo；新 info 里多出来的属性按默认值补进 data（与 8 参构造同语义）。</summary>
+        private static void RebindSettingsInfo(LevelEvent settings, LevelEventInfo info)
+        {
+            try
+            {
+                settings.info = info;
+                if (settings.data == null || info.propertiesInfo == null)
+                    return;
+                foreach (KeyValuePair<string, ADOFAI.PropertyInfo> pair in info.propertiesInfo)
+                {
+                    if (pair.Value != null && !settings.data.ContainsKey(pair.Key))
+                        settings.data[pair.Key] = pair.Value.value_default;
+                }
+            }
+            catch (Exception e)
+            {
+                Logger?.Log("设置事件改绑 LevelEventInfo 失败: " + e.Message);
+            }
         }
 
         /// <summary>装饰栏分组总开关（缺省 true）。</summary>
@@ -345,6 +491,7 @@ namespace ADOFAIEditorExtension
                     Logger?.Log("切换分组方式失败: " + e.Message);
                     return;
                 }
+                Settings.SettingsStore.Save();
             }
 
             DecoGroupRenderer.SyncReorderable(DecoGroupState.Panel);
@@ -432,6 +579,9 @@ namespace ADOFAIEditorExtension
             {
                 Logger?.Log("设置变更后的刷新失败: " + e);
             }
+            // 持久化（内部自带 try/catch 与"内容没变不写盘"）。文本框的值由原版 onEndEdit 监听先写进 data，
+            // 我们的监听挂在它之后（ValueChangePatch2 是 Setup 后置），所以这里读到的已是新值。
+            Settings.SettingsStore.Save();
             return true;
         }
 

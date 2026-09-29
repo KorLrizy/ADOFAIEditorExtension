@@ -86,7 +86,15 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
         internal static string MemberKeyOf(GroupSet set) => set == GroupSet.Event ? MemberKeyEvent : MemberKeyDeco;
 
-        /// <summary>会话内的手动归属（关闭"写入关卡文件"时唯一的存放处，见 §17.3）。</summary>
+        /// <summary>
+        /// 会话内的手动归属（关闭"写入关卡文件"时唯一的存放处，见 §17.3）。
+        /// 按 LevelEvent 对象记：每次读档（<see cref="OnLevelLoaded"/>）与编辑器 Awake（<see cref="ClearSession"/>）清空，
+        /// 不会把上一个关卡的对象一直攥在手里。
+        /// **已知局限**：原版撤销/重做是把 `levelData` 整体换成 `LevelData.Copy()` 出来的快照对象（IL 已核：
+        /// `SaveState` → `levelData.Copy()`，`UndoOrRedo` → `customLevel.levelData = state.data`），
+        /// 快照里只有 data 没有这张表 ⇒ 关闭写入开关时，撤销/重做之后会话内的手动归属会"丢失"（对象换了）。
+        /// 开着写入开关时归属在 data 里，随快照一起走，不受影响。
+        /// </summary>
         private static readonly Dictionary<LevelEvent, int> sessionMembers = new Dictionary<LevelEvent, int>();
 
         /// <summary>装饰当前被手动指定到的自定义分组下标；-1 = 没有手动归属。</summary>
@@ -96,9 +104,10 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         {
             if (e == null)
                 return -1;
-            if (!Main.WriteGroupConfig)
-                return sessionMembers.TryGetValue(e, out int session) ? session : -1;
-            return ReadStoredMember(e, set);
+            // 写入开关开 且 该事件类型注册了这个键 ⇒ data 是唯一来源；否则看会话表
+            if (Main.WriteGroupConfig && IsKeyRegistered(e, MemberKeyOf(set)))
+                return ReadStoredMember(e, set);
+            return sessionMembers.TryGetValue(e, out int session) ? session : -1;
         }
 
         internal static void SetManualGroup(LevelEvent e, int index) => SetManualGroup(e, GroupSet.Decoration, index);
@@ -110,11 +119,16 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             sessionMembers[e] = index;   // 会话内一直记着：关闭写文件时它就是唯一来源
             if (!Main.WriteGroupConfig)
                 return;
+            string key = MemberKeyOf(set);
+            // 该类型没注册这个键（例如拿事件那一套去写装饰）就只留在会话里：
+            // 未注册的键进了 data，原版多选面板（InspectorPanel.ShowPanel 取 propertiesInfo[key]）会直接抛异常
+            if (!IsKeyRegistered(e, key))
+                return;
             // **必须写字符串**：这两个键在 AddInvisibleProperty 里声明成 String，而 r265 的
             // `LevelEvent.Encode(bool)` 会按声明类型 `castclass System.String`，装箱的 int 直接抛
             // InvalidCastException，被 scnEditor.SaveLevel 自己的 catch 吞成"保存失败！！！"（§42）。
             // 读回侧 ParseInt 本来就吃字符串，所以只有写侧要改。
-            try { e[MemberKeyOf(set)] = index.ToString(); }
+            try { e[key] = index.ToString(); }
             catch { }
         }
 
@@ -132,11 +146,67 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 Dictionary<string, object> data = e.data;
                 if (data == null)
                     return;
-                data.Remove(MemberKeyOf(set));
+                string key = MemberKeyOf(set);
+                // 注册过的键写回默认值 ""（不删键）：原版多选的 fake event 只比较"各事件 data 里有的键"，
+                // 有的事件有键、有的没键时，会把第一个事件的归属原样抄给没键的那些（ApplyPropertiesToRealEvents）。
+                // 空串在保存时会被剥掉（见存档前的清理步骤），不会进 .adofai。
+                if (IsKeyRegistered(e, key))
+                    data[key] = "";
+                else
+                    data.Remove(key);
                 if (set == GroupSet.Decoration)
                     data.Remove(MemberKeyLegacy);
             }
             catch { }
+        }
+
+        /// <summary>会话表清空（编辑器重新 Awake 时调用；此时旧关卡的 LevelEvent 全部作废）。</summary>
+        internal static void ClearSession()
+        {
+            sessionMembers.Clear();
+        }
+
+        /// <summary>
+        /// 新关卡读档完成（scnGame.LoadLevel 成功之后）：旧对象全部作废 ⇒ 清空会话表；
+        /// 写入开关关着时，把文件里带来的归属搬进会话表再从 data 剥掉（既不丢用户的归属，
+        /// 之后保存出来的文件里也不会有我们的键）。
+        /// </summary>
+        internal static void OnLevelLoaded(LevelData levelData)
+        {
+            sessionMembers.Clear();
+            if (Main.WriteGroupConfig || levelData == null)
+                return;
+            MoveWrittenKeysToSession(levelData.decorations, levelData.levelEvents);
+        }
+
+        /// <summary>写入开关关着时：先把 data 里的归属读进会话表，再剥离 data 里的归属键（顺序不能反）。</summary>
+        internal static void MoveWrittenKeysToSession()
+        {
+            scnEditor editor = scnEditor.instance;
+            if (editor == null)
+                return;
+            MoveWrittenKeysToSession(editor.decorations, editor.events);
+        }
+
+        private static void MoveWrittenKeysToSession(List<LevelEvent> decorations, List<LevelEvent> events)
+        {
+            SeedSessionList(decorations, GroupSet.Decoration);
+            SeedSessionList(events, GroupSet.Event);
+            PurgeWrittenKeys(decorations, events);
+        }
+
+        /// <summary>这个事件的类型有没有注册该属性（写 data 之前必须确认，见上）。</summary>
+        private static bool IsKeyRegistered(LevelEvent e, string key)
+        {
+            try
+            {
+                LevelEventInfo info = e != null ? e.info : null;
+                return info != null && info.propertiesInfo != null && info.propertiesInfo.ContainsKey(key);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static int ReadStoredMember(LevelEvent e, GroupSet set)
@@ -171,18 +241,27 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         // ---------------------------------------------------------------- 写入开关（§17.3）
 
         /// <summary>
-        /// 把分组归属键从关卡数据里剥离干净：关闭"写入关卡文件"时调用，保证之后保存出来的
-        /// .adofai 里没有我们的键（键是"装饰/事件自己的 data"，剥离后保存自然就不含它）。
+        /// 把分组归属键从关卡数据里剥离干净：关闭"写入关卡文件"时调用（一般走
+        /// <see cref="MoveWrittenKeysToSession()"/>：先读进会话表再剥，否则归属就丢了）。装饰与事件两边都剥全部三个键
+        /// （aeeGroupDeco / aeeGroupEvent / 旧版 aeeGroup）。存档时另有一道清理兜底（开关关时剥掉全部归属键）。
         /// </summary>
         internal static void PurgeWrittenKeys()
         {
             scnEditor editor = scnEditor.instance;
             if (editor == null)
                 return;
+            PurgeWrittenKeys(editor.decorations, editor.events);
+        }
+
+        private static void PurgeWrittenKeys(List<LevelEvent> decorations, List<LevelEvent> events)
+        {
             int removed = 0;
-            removed += PurgeList(editor.decorations, MemberKeyDeco);
-            removed += PurgeList(editor.decorations, MemberKeyLegacy);
-            removed += PurgeList(editor.events, MemberKeyEvent);
+            removed += PurgeList(decorations, MemberKeyDeco);
+            removed += PurgeList(decorations, MemberKeyEvent);
+            removed += PurgeList(decorations, MemberKeyLegacy);
+            removed += PurgeList(events, MemberKeyDeco);
+            removed += PurgeList(events, MemberKeyEvent);
+            removed += PurgeList(events, MemberKeyLegacy);
             if (removed > 0 && Main.Logger != null)
                 Main.Logger.Log(string.Format("分组归属未写入开关=关：已从关卡数据剥离 {0} 个归属键", removed));
         }
@@ -200,7 +279,9 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 try
                 {
                     Dictionary<string, object> data = e.data;
-                    if (data != null && data.Remove(key))
+                    // 键一直注册着 ⇒ 每个事件都带着默认值 ""：照删，但只把有内容的算进日志数量
+                    if (data != null && data.TryGetValue(key, out object value) && data.Remove(key)
+                        && !string.IsNullOrWhiteSpace(Convert.ToString(value)))
                         removed++;
                 }
                 catch { }
@@ -208,16 +289,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             return removed;
         }
 
-        /// <summary>把 data 里已有的归属读进会话表（关掉写入开关时用，避免当前会话的显示突然变空）。</summary>
-        private static void SeedSessionFromData()
-        {
-            scnEditor editor = scnEditor.instance;
-            if (editor == null)
-                return;
-            SeedSessionList(editor.decorations, GroupSet.Decoration);
-            SeedSessionList(editor.events, GroupSet.Event);
-        }
-
+        /// <summary>把 data 里已有的归属读进会话表（剥离前调用，避免当前会话的显示突然变空）。</summary>
         private static void SeedSessionList(List<LevelEvent> list, GroupSet set)
         {
             if (list == null)
@@ -238,33 +310,80 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         {
             if (Main.WriteGroupConfig)
             {
-                // 先从关变开：注册不可见属性并让后续读写走原版机制（§18.2）
+                // 从关变开：属性本来就一直注册着（这里只是保险），之后读写走 data（§18.2）。
                 EnsureInvisibleProperties();
+                // 关着时 data 里的键被剥过：先给当前关卡所有事件补回默认值 ""，保证"有键"这件事处处一致
+                // （原因见 ClearManualGroup 里关于原版多选 fake event 的说明）
+                scnEditor editor = scnEditor.instance;
+                if (editor != null)
+                {
+                    RestoreDefaultKeys(editor.decorations, GroupSet.Decoration);
+                    RestoreDefaultKeys(editor.events, GroupSet.Event);
+                }
                 var snapshot = new List<KeyValuePair<LevelEvent, int>>(sessionMembers);
                 for (int i = 0; i < snapshot.Count; i++)
                 {
                     LevelEvent e = snapshot[i].Key;
                     if (e == null)
                         continue;
-                    GroupSet set = IsEventObject(e) ? GroupSet.Event : GroupSet.Decoration;
+                    GroupSet set = IsDecorationEvent(e) ? GroupSet.Decoration : GroupSet.Event;
                     SetManualGroup(e, set, snapshot[i].Value);
                 }
             }
             else
             {
-                SeedSessionFromData();
-                PurgeWrittenKeys();
+                MoveWrittenKeysToSession();
             }
         }
 
-        /// <summary>这个对象是"砖上的事件"还是"装饰"（决定用哪个键与会话语义）。</summary>
-        private static bool IsEventObject(LevelEvent e)
+        private static void RestoreDefaultKeys(List<LevelEvent> list, GroupSet set)
         {
-            scnEditor editor = scnEditor.instance;
-            if (editor == null || e == null)
+            if (list == null)
+                return;
+            string key = MemberKeyOf(set);
+            for (int i = 0; i < list.Count; i++)
+            {
+                LevelEvent e = list[i];
+                if (e == null || e.data == null || e.data.ContainsKey(key) || !IsKeyRegistered(e, key))
+                    continue;
+                try { e.data[key] = ""; }
+                catch { }
+            }
+        }
+
+        /// <summary>这个对象是"装饰"还是"砖上的事件"（决定用哪个键与会话语义）。按事件类型判断，与它是否还在关卡里无关。</summary>
+        private static bool IsDecorationEvent(LevelEvent e)
+        {
+            try
+            {
+                return e != null && IsDecorationInfo(e.info);
+            }
+            catch
+            {
                 return false;
-            List<LevelEvent> decorations = editor.decorations;
-            return decorations == null || !decorations.Contains(e);
+            }
+        }
+
+        /// <summary>
+        /// 装饰类型判定：原版 `LevelEvent.IsDecoration` 的 getter 就是 `info.isDecoration`（IL 已核）；
+        /// 再补上四种装饰事件类型做保险（万一某个类型的 info 没标这个字段）。
+        /// </summary>
+        private static bool IsDecorationInfo(LevelEventInfo info)
+        {
+            if (info == null)
+                return false;
+            if (info.isDecoration)
+                return true;
+            switch (info.type)
+            {
+                case LevelEventType.AddDecoration:
+                case LevelEventType.AddText:
+                case LevelEventType.AddObject:
+                case LevelEventType.AddParticle:
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         // ---------------------------------------------------------------- 归属键的属性注册（§18.2）
@@ -275,22 +394,26 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             return name == MemberKeyDeco || name == MemberKeyEvent || name == MemberKeyLegacy;
         }
 
-        private static readonly HashSet<string> registeredTypes = new HashSet<string>(StringComparer.Ordinal);
-
         /// <summary>
-        /// 把两个归属键注册成**所有事件类型的 invisible 属性**（只在"写入关卡文件"开启时做）。
+        /// 把归属键注册成事件类型的 invisible 属性：**装饰类型只注册 aeeGroupDeco、砖上事件类型只注册
+        /// aeeGroupEvent**。与"写入关卡文件"开关**无关、始终注册**。
         ///
         /// 为什么必须注册：原版 `LevelEvent.Encode` 只写 `propertiesInfo` 里注册过的键、
-        /// `Decode` 也只读注册过的键（IL 已核，§18.2）。不注册的话：写在 data 里的键**根本不会被保存**，
-        /// 读档也不会恢复 ⇒ "写入关卡文件"形同虚设。注册成 invisible 之后：
-        /// 保存/读档都走原版机制，而面板侧我们自己的 `RenderControl` 补丁会跳过这两个键（不会多出行）。
+        /// `Decode` 也只保留注册过的键（IL 已核，§18.2）。以前只在开关开着时注册 ⇒ 重启游戏后
+        /// 如果注册晚于读档（或开关当时是关的），文件里的归属在读档时就被静默丢掉。始终注册之后：
+        /// 读档一定保留文件里的归属；开关关着时由读档后的 <see cref="OnLevelLoaded"/> 把它们搬进会话表，
+        /// 存档前的清理步骤再把归属键（以及所有空值）剥掉，所以开关关着时文件里不会留下我们的键。
+        /// 面板侧我们自己的 `RenderControl` 补丁会跳过这些键（不会多出行）。
+        ///
+        /// 默认值是 ""：原版构造/读档会给每个事件补上默认值，空串在存档前会被剥离。
+        /// 幂等：每次都按 ContainsKey 判断（GCS.levelEventsInfo 被重建也能重新补上），可以频繁调用。
         ///
         /// 影响面：注册只发生在**装了本模组**的进程里；没有 mod 的环境里这两个键就是普通未知键，
         /// 原版读档会忽略它们（这正是 §17.3 已验证过的兼容路径）。
         /// </summary>
         internal static void EnsureInvisibleProperties()
         {
-            if (!Main.WriteGroupConfig || GCS.levelEventsInfo == null)
+            if (GCS.levelEventsInfo == null)
                 return;
             try
             {
@@ -299,11 +422,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                     LevelEventInfo info = pair.Value;
                     if (info == null || info.propertiesInfo == null)
                         continue;
-                    string tag = pair.Key ?? "";
-                    if (!registeredTypes.Add(tag))
-                        continue;
-                    AddInvisibleProperty(info, MemberKeyDeco);
-                    AddInvisibleProperty(info, MemberKeyEvent);
+                    AddInvisibleProperty(info, IsDecorationInfo(info) ? MemberKeyDeco : MemberKeyEvent);
                 }
             }
             catch (Exception e)
@@ -333,7 +452,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
         internal static int CountOf(GroupSet set) => set == GroupSet.Event ? eventCustomGroupCount : customGroupCount;
 
-        private static void SetCount(GroupSet set, int value)
+        /// <summary>设置某一套自定义分组的行数（internal：供设置持久化在读档时恢复行数）。</summary>
+        internal static void SetCount(GroupSet set, int value)
         {
             if (set == GroupSet.Event)
                 eventCustomGroupCount = value;
@@ -503,6 +623,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 return;
             }
             SetCount(set, CountOf(set) + 1);
+            ADOFAIEditorExtension.Settings.SettingsStore.Save();   // 行数跨重启持久化
             RebuildSettingsPanel();
         }
 
@@ -528,9 +649,21 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             settings[NameKey(set, count - 1)] = "";
             settings[TagKey(set, count - 1)] = "";
             SetCount(set, count - 1);
+            ADOFAIEditorExtension.Settings.SettingsStore.Save();   // 行数跨重启持久化
 
-            // 手动归属是按分组下标记的：删掉一行后要跟着修正，否则对象会跳到别的组去
-            ShiftManualGroups(set, index);
+            // 手动归属是按分组下标记的：删掉一行后要跟着修正，否则对象会跳到别的组去。
+            // 写入开关开着时这一步改的是关卡 data ⇒ 压一个撤销点并置脏（与其它数据编辑同一写法）；
+            // 关着时只改会话表，不碰关卡数据，也就不需要撤销点。
+            scnEditor editor = scnEditor.instance;
+            if (Main.WriteGroupConfig && editor != null)
+            {
+                using (new SaveStateScope(editor, false, true, false))
+                    ShiftManualGroups(set, index);
+            }
+            else
+            {
+                ShiftManualGroups(set, index);
+            }
 
             RebuildSettingsPanel();
         }
@@ -543,8 +676,10 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         }
 
         /// <summary>
-        /// 组内**最后一个成员之后**的那一行对应的装饰（= 下一个分组的第一行），
-        /// 用它当"插到组尾"的锚点；返回 null 表示该组之后没有别的行了（⇒ 追加到装饰数组末尾）。
+        /// 组内**最后一个成员之后**的那一行对应的装饰（= 下一个分组的第一行）。
+        /// "插到组尾"优先用 <see cref="LastEventOfGroup"/> 当锚点（组成员在装饰数组里不一定连续，
+        /// 锚在下一组第一行前面可能落进本组中间）；只有组是空的才退回用它；
+        /// 返回 null 表示该组之后没有别的行了（⇒ 追加到装饰数组末尾）。
         /// </summary>
         internal static LevelEvent NextEventAfterGroup(string key)
         {

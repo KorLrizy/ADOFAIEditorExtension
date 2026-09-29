@@ -85,20 +85,24 @@ namespace ADOFAIEditorExtension.Features.PagerList
             pacl2Checked = false;
         }
 
-        /// <summary>由 `scnEditor.HandleKeyboardActions` 的前缀补丁每帧调用一次。</summary>
-        internal static void HandleKeybinds()
+        /// <summary>
+        /// 由 `scnEditor.HandleKeyboardActions` 的前缀补丁每帧调用一次。
+        /// 返回 true = 这一帧我们接手执行了某条键位 ⇒ 前缀要跳过原版方法体：我们的处理可能顺手把弹窗关掉
+        /// （剪切后不足 2 行），原版随后看到 `showingPopup == false` 就会把同一次按键再执行一遍。
+        /// </summary>
+        internal static bool HandleKeybinds()
         {
             if (!PagerListController.IsPopupOpen)
-                return;
+                return false;
             scnEditor editor = scnEditor.instance;
             if (editor == null)
-                return;
+                return false;
             // 弹窗确实把原版快捷键挡住了（showingPopup）才由我们接手；否则原版自己会处理，
             // 我们再来一遍就会重复执行（粘贴尤其不能重复）。
             // 注意用"非泛型 Get + is 判断"而不是 Get<bool>()：Reflections.Get<T> 在成员缺失时
-            // 返回 null，往值类型上转会直接 NRE（§25.1 的教训）。
+            // 现在返回 default(false)，会把"读不到"和"确实为 false"混为一谈（旧版则直接 NRE，§25.1）。
             if (!(editor.Get("showingPopup") is bool showing) || !showing)
-                return;
+                return false;
 
             EnsureCache(editor);
             for (int i = 0; i < cachedBinds.Count; i++)
@@ -107,8 +111,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     continue;
                 // 与原版 ExecutePressedActions 一致：一帧只执行第一组按下的键位
                 HandleActions(editor, cachedBinds[i].Actions);
-                return;
+                return true;
             }
+            return false;
         }
 
         private static void EnsureCache(scnEditor editor)
@@ -216,6 +221,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
             {
                 // 单选：原版的"选中的事件"就是面板里那个事件，与我们列表当前行一致 ⇒ 直接复用原版 action
                 // （剪切的收尾会 ShowTabsForFloor/ShowPanel ⇒ 先压住"面板切换就关窗"）
+                // 提示里的个数与原版实际处理的一致：全部同类 = 当前砖上该类型的事件数（原版 CopyOfFloor 同口径）
                 int affected = allSameType ? CollectSameTypeEvents(editor, selected).Count : 1;
                 PagerListController.SuppressAutoClose();
                 Run(editor, action);
@@ -423,8 +429,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
             if (floor != null)
             {
                 // 字段名是 stringDirection / floatDirection（不是 stringDir）。
-                // **必须**用"非泛型 Get + is 判断"：Reflections.Get<T>() 在成员缺失时返回 null，
-                // 往 char/float 这种值类型上转会直接 NRE —— 这正是"多选复制必定失败"的根因（§25.1）。
+                // 用"非泛型 Get + is 判断"：成员缺失时 Reflections.Get<T>() 现在返回 default，
+                // 分不清"读不到"与真实值（旧版在这里直接 NRE，正是"多选复制必定失败"的根因，§25.1）。
                 object sd = floor.Get("stringDirection");
                 if (sd is char c)
                     stringDir = c;
@@ -547,15 +553,23 @@ namespace ADOFAIEditorExtension.Features.PagerList
             return -1;
         }
 
-        /// <summary>"复制/剪切全部同类事件"：该类型在整关里的所有事件（原版 allSameTypeEvents 分支同义）。</summary>
+        /// <summary>
+        /// "复制/剪切全部同类事件"：**当前砖上**该类型的所有事件 —— 与原版 `CopyOfFloor` 的 allSameTypeEvents
+        /// 分支同义（IL：`events.FindAll(e => e.floor == floor.seqID &amp;&amp; e.eventType == selectedEventType)`），
+        /// 不是整关（以前按整关收，多选剪切会把别的砖上的同类事件一起删掉）。
+        /// 砖号口径与复制目标一致（<see cref="ResolveFloorID"/>）；取不到砖就返回空表。
+        /// </summary>
         private static List<LevelEvent> CollectSameTypeEvents(scnEditor editor, List<LevelEvent> selected)
         {
             var result = new List<LevelEvent>();
             if (selected == null || selected.Count == 0 || selected[0] == null)
                 return result;
             LevelEventType type = selected[0].eventType;
+            int floorID = ResolveFloorID(editor, selected);
+            if (floorID < 0)
+                return result;
             foreach (LevelEvent ev in AllEvents(editor))
-                if (ev != null && ev.eventType == type)
+                if (ev != null && ev.floor == floorID && ev.eventType == type)
                     result.Add(ev);
             return result;
         }

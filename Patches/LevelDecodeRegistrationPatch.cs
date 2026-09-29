@@ -12,14 +12,15 @@ namespace ADOFAIEditorExtension.Patches
     ///
     /// 为什么要挂在 <c>ADOFAI.LevelData.Decode</c> 上：v2.9.8 的 <c>LevelEvent.Decode</c> 只按
     /// <c>info.propertiesInfo</c> 里**注册过**的键重建 <c>data</c>，<c>Encode</c> 也只写注册过的键。
-    /// 我们的三个键（始终注册的 <c>aeeNote</c>、写入开关开时注册的 <c>aeeGroupDeco</c> /
-    /// <c>aeeGroupEvent</c>）原本只在 <c>scnEditor.Awake</c> Prefix（<c>EditorIntegration.Inject()</c>）
+    /// 我们的三个键（<c>aeeNote</c> 与分组归属键 <c>aeeGroupDeco</c> / <c>aeeGroupEvent</c>，
+    /// 注册条件见 <c>EventNote.EnsureRegistered</c> / <c>DecoGroupState.EnsureInvisibleProperties</c>）
+    /// 原本只在 <c>scnEditor.Awake</c> Prefix（<c>EditorIntegration.Inject()</c>）
     /// 与 <c>scnEditor.Start</c> Postfix 两处注册。若某次会话里有别的流程提前解码关卡
     /// （<c>LevelData.Decode</c> 跑在注册之前），这三个键会在**读档**时被静默丢弃，
     /// 而玩家下一次保存就会把它们永久抹掉 —— 且日志里什么都看不到。
     ///
     /// 本补丁是第三道防线：Prefix 再确保一次（两个注册方法都是幂等的），
-    /// Postfix 把读档结果打一条自检日志，键全丢时醒目报警。
+    /// Postfix 把读档结果打一条自检日志（非空值个数），某个键在所有对象上都不存在（= 解码时未注册）时醒目报警。
     /// 现有 Awake/Start 两条注册路径**保持不变**，不动 <c>Inject()</c> 的结构。
     /// </summary>
     [HarmonyPatch]
@@ -99,8 +100,13 @@ namespace ADOFAIEditorExtension.Patches
         }
 
         /// <summary>
-        /// 读档之后自检：事件/装饰数量 + 三个键各自的出现次数。
+        /// 读档之后自检：事件/装饰数量 + 三个键各自的**非空值**个数。
         /// <c>__instance</c> 声明成 <c>object</c>，字段按名反射读，避免把 <c>LevelData</c> 的成员类型写死。
+        ///
+        /// 注意 <c>LevelEvent.Decode</c> 会给**注册过**但文件里没有的键补默认值（""），所以"data 里有这个键"
+        /// 对每个事件都成立，统计它没有意义 —— 这里数的是值非空的个数（= 文件里真带了内容的）。
+        /// 反过来，"键在所有对象上都**不存在**"才说明解码时它还没注册（Decode 只保留注册过的键）：
+        /// 这正是要报警的情况，此时文件里的该键已在解码时被丢弃，下次保存就永久没了。
         /// </summary>
         internal static void Postfix(object __instance)
         {
@@ -111,22 +117,40 @@ namespace ADOFAIEditorExtension.Patches
 
                 int eventCount = events != null ? events.Count : 0;
                 int decorationCount = decorations != null ? decorations.Count : 0;
-                int noteCount = CountKey(events, Features.Notes.EventNote.KeyNote)
-                    + CountKey(decorations, Features.Notes.EventNote.KeyNote);
-                int decoGroupCount = CountKey(events, Features.DecoGrouping.DecoGroupState.MemberKeyDeco)
-                    + CountKey(decorations, Features.DecoGrouping.DecoGroupState.MemberKeyDeco);
-                int eventGroupCount = CountKey(events, Features.DecoGrouping.DecoGroupState.MemberKeyEvent)
-                    + CountKey(decorations, Features.DecoGrouping.DecoGroupState.MemberKeyEvent);
+                string noteKey = Features.Notes.EventNote.KeyNote;
+                string decoKey = Features.DecoGrouping.DecoGroupState.MemberKeyDeco;
+                string eventKey = Features.DecoGrouping.DecoGroupState.MemberKeyEvent;
+
+                int noteCount = CountNonEmpty(events, noteKey) + CountNonEmpty(decorations, noteKey);
+                int decoGroupCount = CountNonEmpty(events, decoKey) + CountNonEmpty(decorations, decoKey);
+                int eventGroupCount = CountNonEmpty(events, eventKey) + CountNonEmpty(decorations, eventKey);
 
                 Main.Logger?.Log(string.Format(
-                    "读档完成: 事件 {0} 个 / 装饰 {1} 个 / 带 aeeNote 键 {2} 个 / 带 aeeGroupDeco 键 {3} 个 / 带 aeeGroupEvent 键 {4} 个",
+                    "读档完成: 事件 {0} 个 / 装饰 {1} 个 / 非空 aeeNote {2} 个 / 非空 aeeGroupDeco {3} 个 / 非空 aeeGroupEvent {4} 个",
                     eventCount, decorationCount, noteCount, decoGroupCount, eventGroupCount));
 
-                if (eventCount + decorationCount > 0 && noteCount == 0 && decoGroupCount == 0 && eventGroupCount == 0)
+                if (eventCount + decorationCount == 0)
+                    return;
+
+                // 按"键在全部对象上都不存在"判定注册时序失败（见方法注释）。
+                // 备注是用户内容、始终注册 ⇒ 始终检查；归属键只有"写入关卡文件"开着时才有数据要保，
+                // 关着时归属只在会话表里，键没注册也不会丢任何东西，不报。
+                var missing = new List<string>();
+                if (CountPresent(events, noteKey) + CountPresent(decorations, noteKey) == 0)
+                    missing.Add(noteKey);
+                if (Main.WriteGroupConfig)
                 {
-                    Main.Logger?.Log("【警告】关卡里有事件/装饰，但 aeeNote / aeeGroupDeco / aeeGroupEvent " +
-                        "三个键一个都没读回来 —— 疑似属性注册时序失败，键已在解码时被丢弃。" +
-                        "**本次保存会把这些数据永久抹掉**，请先另存一份再操作。");
+                    if (decorationCount > 0 && CountPresent(decorations, decoKey) == 0)
+                        missing.Add(decoKey);
+                    if (eventCount > 0 && CountPresent(events, eventKey) == 0)
+                        missing.Add(eventKey);
+                }
+
+                if (missing.Count > 0)
+                {
+                    Main.Logger?.Log("【警告】关卡里有事件/装饰，但 " + string.Join(" / ", missing) +
+                        " 键在所有对象上都不存在 —— 疑似解码时这些属性还没注册（属性注册时序失败），" +
+                        "文件里的对应数据已在解码时被丢弃。**本次保存会把这些数据永久抹掉**，请先另存一份再操作。");
                 }
             }
             catch (Exception e)
@@ -246,8 +270,8 @@ namespace ADOFAIEditorExtension.Patches
             return null;
         }
 
-        /// <summary>统计 data 里带某个键的事件数（null 事件 / null data 都不算）。</summary>
-        private static int CountKey(List<LevelEvent> events, string key)
+        /// <summary>统计 data 里带某个键的事件数（null 事件 / null data 都不算；值为空也算"带"）。</summary>
+        private static int CountPresent(List<LevelEvent> events, string key)
         {
             if (events == null)
                 return 0;
@@ -256,6 +280,24 @@ namespace ADOFAIEditorExtension.Patches
             {
                 LevelEvent levelEvent = events[i];
                 if (levelEvent != null && levelEvent.data != null && levelEvent.data.ContainsKey(key))
+                    count++;
+            }
+            return count;
+        }
+
+        /// <summary>统计该键的值非空（非 null、ToString 后不是空串 / 纯空白）的事件数。</summary>
+        private static int CountNonEmpty(List<LevelEvent> events, string key)
+        {
+            if (events == null)
+                return 0;
+            int count = 0;
+            for (int i = 0; i < events.Count; i++)
+            {
+                LevelEvent levelEvent = events[i];
+                if (levelEvent == null || levelEvent.data == null)
+                    continue;
+                if (levelEvent.data.TryGetValue(key, out object value) && value != null
+                    && !string.IsNullOrWhiteSpace(value.ToString()))
                     count++;
             }
             return count;
