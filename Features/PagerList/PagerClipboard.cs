@@ -17,7 +17,11 @@ namespace ADOFAIEditorExtension.Features.PagerList
         CutEvents,
         CopyAllSameType,
         CutAllSameType,
-        PasteEvents
+        PasteEvents,
+        /// <summary>撤销关卡（§45，Ctrl+Z；键位表里 `UndoEditorAction`）。</summary>
+        UndoLevel,
+        /// <summary>重做关卡（§45，弹窗内只认 Ctrl+Shift+Z，见 KeepInPopup；键位表里 `RedoEditorAction`）。</summary>
+        RedoLevel
     }
 
     /// <summary>
@@ -38,13 +42,25 @@ namespace ADOFAIEditorExtension.Features.PagerList
     ///    `clipboardContent = Floors(1)`，每个事件用 8 参 ctor 浅拷贝（r265 删了 `LevelEvent.CopyShallow()`，
     ///    见 <see cref="CopyEventsForClipboard"/>）并把 `floor` 改成源砖
     ///    （与原版 `scnEditor.CopyEvent(ev, floor)` 做的事一样）；粘贴依旧交回原版 action。
+    ///
+    /// 撤销 / 重做（§45）也走这里：同样是被 `showingPopup` 挡掉的原版快捷键，同样按原版键位表判定，
+    /// 只是动作换成"调撤销/重做入口 + 把弹窗按新数据重刷"（见 <see cref="PagerListController.UndoRedoInPopup"/>）。
     /// </summary>
     internal static class PagerClipboard
     {
         /// <summary>原版剪贴板里 "Floors" 这一档（= 1）；事件也走这一档（见 §24.1）。</summary>
         private const int ClipboardContentFloors = 1;
 
-        /// <summary>类型名 → 意图（纯映射，离线可测）。</summary>
+        /// <summary>
+        /// 类型名 → 意图（纯映射，离线可测）。
+        ///
+        /// 撤销 / 重做（§45）也是这么认的：原版 `scnEditor.RegisterKeybinds` 里
+        /// `UndoEditorAction` 挂在 `new EditorKeybind(KeyModifier 2, KeyCode 122 'z', true)`（= Ctrl+Z），
+        /// `RedoEditorAction` 挂在 `(3, 122, true)`（Ctrl+Shift+Z）与 `(2, 121 'y', true)`（Ctrl+Y）——
+        /// r265 IL 已核（`newobj EditorKeybind::.ctor` 前的 `ldc.i4` / `ldc.i4.s` 就是 modifierMask 与 key）。
+        /// 所以这里只认 action 的类型名，键位怎么改、一个动作挂几组键，全都跟着用户自己的键位表走，
+        /// 不写死 KeyCode。
+        /// </summary>
         internal static PagerClipboardIntent IntentOf(string actionTypeName)
         {
             switch (actionTypeName)
@@ -54,6 +70,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 case "CopyAllSameTypeEventsEditorAction": return PagerClipboardIntent.CopyAllSameType;
                 case "CutAllSameTypeEventsEditorAction": return PagerClipboardIntent.CutAllSameType;
                 case "PasteEventsEditorAction": return PagerClipboardIntent.PasteEvents;
+                case "UndoEditorAction": return PagerClipboardIntent.UndoLevel;
+                case "RedoEditorAction": return PagerClipboardIntent.RedoLevel;
                 default: return PagerClipboardIntent.None;
             }
         }
@@ -146,6 +164,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     {
                         if (action == null || IntentOf(action.GetType().Name) == PagerClipboardIntent.None)
                             continue;
+                        if (!KeepInPopup(entries[i].Key, IntentOf(action.GetType().Name)))
+                            continue;
                         if (ours == null)
                             ours = new List<object>();
                         ours.Add(action);
@@ -155,6 +175,20 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     cachedBinds.Add(new Bind { Keybind = entries[i].Key, Actions = ours });
             }
             cacheValid = true;
+        }
+
+        /// <summary>
+        /// 弹窗内是否接手这条键位（§45.1，用户要求）：重做只认 Ctrl+Shift+Z ——
+        /// 原版把 `RedoEditorAction` 同时挂在 `(3,'z')` 与 `(2,'y')` 上，弹窗里去掉 Y 那组，
+        /// 于是弹窗开着时按 Ctrl+Y 什么都不做（原版此时也被 showingPopup 挡着）。弹窗外仍是原版行为。
+        /// </summary>
+        private static bool KeepInPopup(object keybind, PagerClipboardIntent intent)
+        {
+            if (intent != PagerClipboardIntent.RedoLevel)
+                return true;
+            if (keybind is ADOFAI.Editor.EditorKeybind bind)
+                return bind.key != KeyCode.Y;
+            return true;
         }
 
         private static void HandleActions(scnEditor editor, List<object> actions)
@@ -183,6 +217,15 @@ namespace ADOFAIEditorExtension.Features.PagerList
 
         private static void HandleAction(scnEditor editor, object action, PagerClipboardIntent intent)
         {
+            if (intent == PagerClipboardIntent.UndoLevel || intent == PagerClipboardIntent.RedoLevel)
+            {
+                // 撤销 / 重做（§45）：执行一次关卡撤销/重做，然后**不关窗**把弹窗按撤销后的数据重刷。
+                // 与剪贴板走同一个"一帧只执行第一组按下的键位 + 同一帧跳过原版方法体"的机制
+                // （见 PagerKeybindPatch），所以一次按键只撤一步。
+                PagerListController.UndoRedoInPopup(intent == PagerClipboardIntent.RedoLevel);
+                return;
+            }
+
             if (intent == PagerClipboardIntent.PasteEvents)
             {
                 // 粘贴一律交回原版（它自己会按 clipboard / clipboardContent 的语义处理，

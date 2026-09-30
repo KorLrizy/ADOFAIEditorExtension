@@ -3037,6 +3037,153 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>
+        /// 弹窗开着时按撤销 / 重做快捷键（§45）：执行一次关卡撤销/重做，然后**不关窗**把弹窗按撤销后的
+        /// 数据重刷（事件顺序、分组归属、组头、选中高亮、右侧属性面板）。
+        ///
+        /// **为什么要自己做**：本弹窗是 `scnEditor.ShowPopup` 打开的（`showingPopup == true`），
+        /// 原版 `HandleKeyboardActions` 一见它就"只处理 Esc 然后 return"（r265 IL 已核，见
+        /// <see cref="PagerUndo"/>）⇒ 弹窗期间 Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z 全部停摆。
+        /// 键位判定、以及"我们处理掉按键的那一帧跳过原版方法体"沿用剪贴板那一套
+        /// （<see cref="PagerClipboard.HandleKeybinds"/> + `PagerKeybindPatch`），所以一次按键只撤一步。
+        ///
+        /// **撤销会换掉事件对象**（原版撤销把整份 levelData 换成快照副本 ⇒ v2 的 `UndoPatch`/`RedoPatch`
+        /// 后置里 `OnLevelUndoRedo` 已经先把批量态退掉了），所以进撤销之前按**对象**记下选中集、
+        /// 当前事件与它的下标，撤销之后按对象重映射回新下标（纯逻辑见 <see cref="PagerUndo.RemapSelection"/>）：
+        /// 当前事件没了就停在原下标的邻居上（越界夹到末尾）；这个类型在这块砖上不足 2 个事件
+        /// （或选中的砖不再是单选）⇒ 回到"原版分页器本来就不显示"的状态，交给 <see cref="ReloadRows"/>
+        /// 里的 `CanOpen` 关窗。
+        /// </summary>
+        internal static void UndoRedoInPopup(bool redo)
+        {
+            string what = redo ? "重做" : "撤销";
+            scnEditor editor = scnEditor.instance;
+            InspectorTab tab = openTab;
+            if (!Main.IsEnabled || editor == null || tab == null || !isOpen)
+                return;
+
+            // 文本输入框有焦点 ⇒ 不拦截（输入框里 Ctrl+Z 是文本撤销，原版也是这道门）
+            if (PagerUndo.SkipForInputField(editor))
+            {
+                Main.Logger?.Log("分页器直选：弹窗内" + what + "未拦截（文本输入框有焦点）");
+                return;
+            }
+
+            // 撤销前的快照：全是**对象**（下标撤销后会变，对象本身也会被换掉）
+            List<LevelEvent> selectedBefore = SelectedPopupEvents();
+            LevelEvent currentBefore = currentEvent;
+            List<LevelEvent> stackBefore = currentStack != null ? new List<LevelEvent>(currentStack) : null;
+            int indexBefore = currentStack != null && currentStack.Count > 0
+                ? Mathf.Clamp(tab.eventIndex, 0, currentStack.Count - 1)
+                : 0;
+
+            // 撤销 / 重做的收尾会 DeselectFloors + 按记录重选砖 + ShowPanel（原版 `UndoOrRedo` 自己做的），
+            // 那会命中"面板切换就关窗"/"换砖"两条补丁 ⇒ **先**声明这是我们自己触发的，弹窗才不会被顺手关掉
+            SuppressAutoClose();
+            UndoOrRedoLevel(editor, redo);
+
+            // §45.2：撤销之后的整段刷新（ReloadRows / ShowPanel / RefreshList）都放进一个**不存档**的作用域
+            // （skipSaving = true ⇒ 只把 changingState + 1，不调 SaveState）。原版 `InspectorPanel.ShowPanel` 自己开的是
+            // `SaveStateScope(editor,false,false,false)` ⇒ 在作用域外被调用时会压一个"只记选择"的撤销点（data == null），
+            // 于是下一次 Ctrl+Z 撤掉的正是这个刚压进去的选择点，关卡本身一步也退不回去 —— 实测"弹窗内按撤销没反应"就是它
+            // （诊断：连按 4 次撤销，撤销栈每次都是 21→20、重做栈 1→2→3→4，levelData 一次都没换）。
+            // 原版撤销自己的收尾也在它的作用域里做，所以不会有这个问题。
+            using (new SaveStateScope(editor, false, false, true))
+                RefreshAfterUndoRedo(editor, tab, redo, what, stackBefore, selectedBefore, currentBefore, indexBefore);
+        }
+
+        private static void RefreshAfterUndoRedo(scnEditor editor, InspectorTab tab, bool redo, string what,
+            List<LevelEvent> stackBefore, List<LevelEvent> selectedBefore, LevelEvent currentBefore, int indexBefore)
+        {
+            // 根据这次撤销后的堆栈重新取这一堆事件，并按对象重映射选中集与当前事件
+            List<LevelEvent> stack = null;
+            try { stack = editor.GetSelectedFloorEvents(tab.levelEventType); }
+            catch (Exception e) { Main.Logger?.Log("弹窗内" + what + "后取事件列表失败: " + e.Message); }
+
+            if (!isOpen)
+            {
+                // 撤销途中的面板切换/选砖（原版 UndoOrRedo 的 ShowPanel / SelectFloor）已经按原规则把弹窗关掉了
+                LogUndoRedo(redo, stack != null ? stack.Count : 0, 0);
+                return;
+            }
+
+            if (stack == null || stack.Count <= 1)
+            {
+                LogUndoRedo(redo, stack != null ? stack.Count : 0, 0);
+                Close();       // 该类型在这块砖上不足 2 个事件：原版分页器/本弹窗本来就不该开着
+                return;
+            }
+
+            selectedIndices.Clear();
+            selectionAnchor = -1;
+            // 原版撤销换掉了事件对象 ⇒ 按内容指纹（忽略分组标签键）把选中与当前事件对回去（§45.2），
+            // 否则高亮会停在原下标上，而不是跟着被撤回原位的那个事件走
+            string tagKey = stack.Count > 0 ? DecoGroupActions.GroupTagKeyOf(stack[0], DecoGroupState.GroupSet.Event) : null;
+            PagerUndo.RemapSelection(stack, stackBefore, selectedBefore, currentBefore, indexBefore, selectedIndices,
+                out int currentIndex, e => PagerUndo.Fingerprint(e, tagKey));
+            if (currentIndex < 0 || currentIndex >= stack.Count)
+                currentIndex = 0;
+            currentEvent = stack[currentIndex];
+            tab.eventIndex = currentIndex;
+
+            // 顺序 / 分组归属 / 组头 / 选中高亮 / 列表高度全部按新数据重建（它内部会再判一次 CanOpen）
+            ReloadRows();
+            if (!isOpen)
+            {
+                LogUndoRedo(redo, stack.Count, 0);   // CanOpen 判 false（换砖/换类型/砖不再单选）⇒ 已经关窗了
+                return;
+            }
+
+            if (HasBatch())
+            {
+                // 批量态还活着（理论上 v2 撤销会换掉对象 ⇒ 走不到这里，留着兜底）：按新数据重建 fake 并挂回面板
+                ApplySelectionToPanel(false);
+            }
+            else
+            {
+                // 右侧属性面板：原版撤销实现自己会 ShowPanel，但那用的是撤销快照里的类型/下标；
+                // 这里对齐到我们重映射后的当前事件（同一类型 ⇒ 不会触发关窗，先压住保险）
+                SuppressAutoClose();
+                try { tab.panel?.ShowPanel(tab.levelEventType, currentIndex); }
+                catch (Exception e) { Main.Logger?.Log("弹窗内" + what + "后刷新属性面板失败: " + e.Message); }
+            }
+
+            // 装饰栏（分组列表）：原版撤销走 UpdateDecorationObjects → 每个装饰 CallDecorationUpdate
+            // → `PropertyControl_DecorationsList.OnDecorationUpdate` 置 applyOnDecorationUpdate，
+            // 下一帧 `LateUpdate` → ApplyOnDecorationUpdate → FilterSearchResults（我们的分组 Build 挂在这）
+            // ⇒ **原版自己会刷**；这里同帧再刷一次，免得撤销后这一帧里装饰栏还显示旧分组/旧成员。
+            DecoGroupRenderer.RefreshList();
+
+            LogUndoRedo(redo, stack.Count, LiveSelectionCount());
+        }
+
+        /// <summary>
+        /// 执行一次关卡撤销 / 重做：直接走原版入口（v2 没有 PACL2，撤销栈就是原版那一套；
+        /// `Undo()` = `UndoOrRedo(false)`、`Redo()` = `UndoOrRedo(true)`，r265 IL 已核）。
+        /// 抛异常时不再补一次：可能已经回滚到一半，宁可这次没生效也不能撤两步。
+        /// </summary>
+        private static void UndoOrRedoLevel(scnEditor editor, bool redo)
+        {
+            try
+            {
+                if (redo)
+                    editor.Redo();
+                else
+                    editor.Undo();
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("弹窗内" + (redo ? "重做" : "撤销") + "失败（不再重试）: " + e);
+            }
+        }
+
+        /// <summary>弹窗内撤销/重做各记一行（§45）：事件个数 = 撤销后这块砖该类型的事件数，选中 = 当前真实选中数。</summary>
+        private static void LogUndoRedo(bool redo, int events, int selected)
+        {
+            Main.Logger?.Log(string.Format("分页器直选：弹窗内{0} → 事件 {1} 个，选中 {2} 个",
+                redo ? "重做" : "撤销", events, selected));
+        }
+
+        /// <summary>
         /// `LevelEvent.set_Item` 的兜底入口（§32.2）：只有写的是我们的 fake 时才动。
         /// 覆盖绕过 `PropertyControl.OnValueChange` 的写值路径（OGG 编码回调、文件处理回调等），
         /// 以及"一次改多个键"的控件；幂等检查保证不会重复写/多开撤销点。
