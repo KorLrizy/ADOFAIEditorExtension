@@ -30,7 +30,14 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         internal Button LockButton;
         internal Image LockImage;
         internal Transform Background;
+        /// <summary>自定义分组组头的着色层（外观复制原版选中白底：圆角 + 四周留白；没设颜色时整个对象隐藏）。</summary>
+        internal Image Tint;
         internal Color OriginalLabelColor;
+        internal Color OriginalArrowColor;
+        internal Color OriginalEyeColor;
+        internal Color OriginalLockColor;
+        /// <summary>组头行根 Image 的底色（对比色判定用；本来就是透明的话按黑色处理，见 DecoGroupState.HeaderBaseColor）。</summary>
+        internal Color BaseColor;
         internal bool OriginalBackgroundActive;
         internal DecoGroupHeader Marker;
     }
@@ -752,10 +759,97 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
             // 高亮（拖拽落点）之外的组头恢复原外观：头行来自对象池，可能残留上一次的高亮色
             bool highlighted = highlightedGroupKey != null && highlightedGroupKey == slot.Key;
+
+            // 组头颜色：同样每次刷新都重设（对象池里的头行会被别的组复用，必须自己复位）；
+            // 文字/箭头/眼睛/锁的颜色统一由 ApplyHeaderColors 决定（自定义色 ⇒ 按底色取对比色）
+            ApplyGroupTint(header, slot.Key, DecoGroupState.GroupSet.Decoration);
+            ApplyHeaderColors(header, highlighted);
+        }
+
+        /// <summary>
+        /// 按分组键给组头上色。装饰栏头行来自对象池（会被别的组复用），所以哪怕"这个组没有颜色"
+        /// 也要显式把色层关掉，不能留着上一个组的颜色。
+        ///
+        /// 只有**用户自己添加的自定义分组**（键 "custom:N"）且设过颜色才着色：
+        /// 自动分组（type:* / tag:*）与 "custom:rest"（「未分组」）按需求 3 保持原样。
+        /// 解析失败 / alpha 为 0（默认值）都按"没有颜色"处理。
+        /// </summary>
+        private static void ApplyGroupTint(HeaderRow header, string groupKey, DecoGroupState.GroupSet set)
+        {
+            Color color = default;
+            bool hasColor = DecoGroupState.TryGetCustomIndex(groupKey, out int index)
+                && DecoGroupState.TryGetCustomGroupColor(set, index, out color);
+            if (header == null || header.Tint == null)
+                return;
+            if (!hasColor)
+            {
+                header.Tint.gameObject.SetActive(false);
+                return;
+            }
+            header.Tint.color = color;
+            header.Tint.gameObject.SetActive(true);
+        }
+
+        /// <summary>
+        /// 头行上四块内容的颜色（组名、箭头、眼睛、锁）统一在这里决定：
+        ///  · 高亮（拖拽落点，此时显示的是原版选中白底）⇒ 全黑，保持原版选中行的语义；
+        ///  · 有自定义色层 ⇒ 按"色层叠在原版底色上"的亮度算对比色（浅底黑字、深底原色），
+        ///    否则接近白色的组头色配上白色组名/箭头就完全看不清；
+        ///  · 没有色层 ⇒ 各自恢复原色（头行会被对象池复用，不能留着上一组的颜色）。
+        /// 眼睛/锁图标原版只在 `ListItem_Decoration.ShowSelectionBackground` 里改按钮的 ColorBlock、
+        /// 图标 Image 本身固定白色（r148 IL 已核：`LateUpdate` 只换 sprite），所以这里直接改 Image.color 即可。
+        /// </summary>
+        private static void ApplyHeaderColors(HeaderRow header, bool highlighted)
+        {
+            if (header == null)
+                return;
+
+            Color label = header.OriginalLabelColor;
+            Color arrow = header.OriginalArrowColor;
+            Color eye = header.OriginalEyeColor;
+            Color lockColor = header.OriginalLockColor;
+
+            if (highlighted)
+            {
+                label = arrow = eye = lockColor = Color.black;
+            }
+            else if (header.Tint != null && header.Tint.gameObject.activeSelf)
+            {
+                label = DecoGroupState.ContrastTextColor(header.Tint.color, header.BaseColor, header.OriginalLabelColor);
+                arrow = DecoGroupState.ContrastTextColor(header.Tint.color, header.BaseColor, header.OriginalArrowColor);
+                eye = DecoGroupState.ContrastTextColor(header.Tint.color, header.BaseColor, header.OriginalEyeColor);
+                lockColor = DecoGroupState.ContrastTextColor(header.Tint.color, header.BaseColor, header.OriginalLockColor);
+            }
+
             if (header.Label != null)
-                header.Label.color = highlighted ? Color.black : header.OriginalLabelColor;
+                header.Label.color = label;
+            if (header.Arrow != null)
+                header.Arrow.color = arrow;
+            if (header.EyeImage != null)
+                header.EyeImage.color = eye;
+            if (header.LockImage != null)
+                header.LockImage.color = lockColor;
             if (header.Background != null)
                 header.Background.gameObject.SetActive(highlighted || header.OriginalBackgroundActive);
+        }
+
+        /// <summary>
+        /// 建组头色层：外观（含圆角与四周留白）整套复制原版选中白底，见
+        /// <see cref="DecoGroupState.CreateTintLayer"/>。必须在 StripRow 之后调用 —— StripRow 会把不在
+        /// 保留名单里的顶层子对象整个关掉。色层与白底同父、插在白底前面 ⇒ 画在白底与其它内容之下。
+        /// </summary>
+        private static Image CreateGroupTint(Transform row, Transform background, string groupKey = null)
+        {
+            return DecoGroupState.CreateTintLayer(row, background, "aee_groupTint", groupKey, LogMissingTintBackground);
+        }
+
+        /// <summary>"白底没有 Image 可抄"只在每个分组上记一次：头行走对象池、每次重建都会走到这里，不去重会刷屏。</summary>
+        private static readonly HashSet<string> tintBackgroundWarned = new HashSet<string>(StringComparer.Ordinal);
+
+        private static void LogMissingTintBackground(string message)
+        {
+            if (tintBackgroundWarned.Add(message))
+                Main.Logger?.Log(message);
         }
 
         private static HeaderRow AcquireHeader(PropertyControl_DecorationsList panel, string key)
@@ -818,6 +912,10 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
             StripRow(clone, label, background, eyeButton, lockButton);
 
+            // 色层要在 StripRow 之后建（否则会被当成"不保留的子对象"关掉）。
+            // 外观整套复制原版选中白底（圆角 + 四周留白），并与白底同父、插在白底前面 ⇒ 画在白底之下
+            Image tint = CreateGroupTint(clone.transform, background);
+
             var marker = clone.GetComponent<DecoGroupHeader>();
             if (marker == null)
                 marker = clone.AddComponent<DecoGroupHeader>();
@@ -867,7 +965,16 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 LockButton = lockButton,
                 LockImage = lockImage,
                 Background = background,
+                Tint = tint,
                 OriginalLabelColor = label != null ? label.color : Color.white,
+                // 箭头是自建的，颜色在 CreateArrow 里抄自组名 —— 这里以**箭头对象当前的颜色**为准，
+                // 免得以后改了 CreateArrow 的抄色来源，对比色的回退色就跟箭头实际颜色对不上
+                OriginalArrowColor = arrow != null ? arrow.color : Color.white,
+                // 图标 Image 的初始色（prefab 上是白）：撤回自定义色 / 取消高亮时要还原成它
+                OriginalEyeColor = eyeImage != null ? eyeImage.color : Color.white,
+                OriginalLockColor = lockImage != null ? lockImage.color : Color.white,
+                // 行根 Image 的底色：对比色判定时当"色层下面的那层"用（透明就算黑）
+                BaseColor = DecoGroupState.HeaderBaseColor(clone.GetComponent<Image>()),
                 OriginalBackgroundActive = background != null && background.gameObject.activeSelf,
                 Marker = marker
             };
@@ -1543,7 +1650,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             return TryGetWorldRange(rect, out topWorldY, out _);
         }
 
-        /// <summary>高亮拖拽落点组头（原版选中风格：白底 + 黑字），传 null 还原。</summary>
+        /// <summary>高亮拖拽落点组头（原版选中风格：白底 + 黑字），传 null 还原（还原时按对比色规则重算，
+        /// 不是简单写回原色 —— 有自定义组头色的组取消高亮后仍要保住对比色）。</summary>
         internal static void SetGroupHighlight(string key)
         {
             highlightedGroupKey = key;
@@ -1552,11 +1660,9 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
                 HeaderRow header = pair.Value;
                 if (header == null)
                     continue;
-                bool on = key != null && pair.Key == key;
-                if (header.Label != null)
-                    header.Label.color = on ? Color.black : header.OriginalLabelColor;
-                if (header.Background != null)
-                    header.Background.gameObject.SetActive(on || header.OriginalBackgroundActive);
+                // 颜色按这一行**当前实际**的色层状态算：SetGroupHighlight 会在 RenderHeader 之外被调用
+                bool highlighted = key != null && pair.Key == key;
+                ApplyHeaderColors(header, highlighted);
             }
         }
 

@@ -18,10 +18,12 @@ namespace ADOFAIEditorExtension.Settings
     /// <code>
     /// { "version": 1, "decoGroupingEnabled": true, "autoGroupMode": "ByType", "showGroupCounts": true,
     ///   "pagerListEnabled": true, "eventGroupEditing": "Decoration", "writeGroupConfig": false,
-    ///   "decorationGroupCount": 1, "decorationGroups": [ { "name": "...", "tag": "..." } ],
+    ///   "decorationGroupCount": 1, "decorationGroups": [ { "name": "...", "tag": "...", "color": "rrggbbaa" } ],
     ///   "eventGroupCount": 0, "eventGroups": [] }
     /// </code>
     /// 读取按字段逐个宽松解析：缺字段 / 类型不对的字段保持默认值，整个文件缺失或损坏 ⇒ 全用默认值 + 一行日志，绝不抛出。
+    /// <c>color</c> 是组头颜色（原版约定的小写 hex：8 位 rrggbbaa，默认 <c>ffffff00</c> = 全透明纯白 = 不着色）；
+    /// 缺这个字段或值不合法都按默认色处理（<see cref="CurrentVersion"/> 仍是 1：新增字段向后兼容，老文件照样能读）。
     /// 写入走"临时文件 + 替换"保证原子性；内容与上次一致时跳过写盘；IO 异常只记日志。
     /// <c>CustomTab.saveSetting == false</c> 时整个持久化关闭（读写都跳过）。
     /// </summary>
@@ -37,6 +39,7 @@ namespace ADOFAIEditorExtension.Settings
         private const string KeyEventGroups = "eventGroups";
         private const string KeyGroupName = "name";
         private const string KeyGroupTag = "tag";
+        private const string KeyGroupColor = "color";
 
         /// <summary>是否已经跑过 <see cref="Load"/>：没读过就写会拿默认值覆盖掉磁盘上的设置，所以 Save 以它为前提。</summary>
         private static bool loaded;
@@ -190,8 +193,23 @@ namespace ADOFAIEditorExtension.Settings
                 JObject group = groups != null && i < groups.Count ? groups[i] as JObject : null;
                 settings[DecoGroupState.NameKey(set, i)] = group != null ? ReadText(group[KeyGroupName]) : "";
                 settings[DecoGroupState.TagKey(set, i)] = group != null ? ReadText(group[KeyGroupTag]) : "";
+                // 颜色：缺字段 / 非法 hex 一律回落默认色（ffffff00 = 不着色），并规范成 8 位小写 hex
+                settings[DecoGroupState.ColorKey(set, i)] = group != null ? ReadGroupColor(group[KeyGroupColor]) : DecoGroupState.DefaultGroupColorHex;
             }
             DecoGroupState.SetCount(set, count);
+        }
+
+        /// <summary>
+        /// 分组颜色字段：无论磁盘上是什么（缺失 / 空串 / 带 '#' / 大小写混杂 / 长度不对 / 数字 / 对象），
+        /// 要么给出规范化的 8 位小写 hex，要么给默认值；绝不抛（<see cref="DecoGroupState.TryParseGroupColor"/> 是纯逻辑解析）。
+        /// </summary>
+        private static string ReadGroupColor(JToken token)
+        {
+            if (token == null)
+                return DecoGroupState.DefaultGroupColorHex;
+            return DecoGroupState.TryParseGroupColor(ReadText(token), out UnityEngine.Color color)
+                ? DecoGroupState.ToHex(color)
+                : DecoGroupState.DefaultGroupColorHex;
         }
 
         // ------------------------------------------------------------------ 写
@@ -252,7 +270,9 @@ namespace ADOFAIEditorExtension.Settings
                 groups.Add(new JObject
                 {
                     [KeyGroupName] = DecoGroupState.ReadString(settings, DecoGroupState.NameKey(set, i)),
-                    [KeyGroupTag] = DecoGroupState.ReadString(settings, DecoGroupState.TagKey(set, i))
+                    [KeyGroupTag] = DecoGroupState.ReadString(settings, DecoGroupState.TagKey(set, i)),
+                    // data 里存的就是 hex 字符串；这里统一规范成 8 位小写（读不回来 ⇒ 默认色）
+                    [KeyGroupColor] = DecoGroupState.ReadCustomGroupColorHex(settings, set, i)
                 });
             }
             root[countKey] = count;

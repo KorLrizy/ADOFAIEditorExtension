@@ -101,6 +101,13 @@ namespace ADOFAIEditorExtension.Features.PagerList
     {
         internal string Key;
 
+        /// <summary>
+        /// 这一行"该有的"组名颜色：没有自定义组头色时就是原版白，有的话是按底色算出来的对比色
+        /// （见 <see cref="DecoGroupState.ContrastTextColor"/>）。取消拖放高亮时按它还原 ——
+        /// 早先写死回 <c>Color.white</c>，浅色组头取消高亮后组名（连同写进文本里的 ▼/▶）又变回看不清。
+        /// </summary>
+        internal Color OriginalLabelColor = Color.white;
+
         internal void OnArrow() => PagerListController.ToggleGroupCollapsed(Key);
         internal void OnName() => PagerListController.SelectGroupMembers(Key);
     }
@@ -1081,6 +1088,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
             if (background != null)
                 background.gameObject.SetActive(false);
 
+            // 自定义分组的组头色层（建在 StripPagerRow 之后：它会把不保留的子对象全关掉）。
+            // 外观整套复制原版选中白底（圆角 + 四周留白），与白底同父、插在白底前面 ⇒ 画在白底与组名之下。
+            // 取色用"事件"那一套自定义分组定义（弹窗里的分组键来自 PagerGroupKey）。
+            Image tint = ApplyHeaderTint(row, background, slot.Key);
             if (label != null)
             {
                 for (Transform t = label.transform; t != null && t != row.transform; t = t.parent)
@@ -1095,6 +1106,11 @@ namespace ADOFAIEditorExtension.Features.PagerList
 
             PagerGroupHeader marker = row.AddComponent<PagerGroupHeader>();
             marker.Key = slot.Key;
+            // 组名（含写进文本里的 ▼/▶ 标记）的颜色：有色层就按"色层叠在原版行底色上"的亮度取对比色，
+            // 否则原版白。算好的颜色存进 marker，取消拖放高亮时按它还原（SetGroupHighlight）。
+            marker.OriginalLabelColor = ResolveHeaderLabelColor(row, tint);
+            if (label != null)
+                label.color = marker.OriginalLabelColor;
             // 箭头区必须盖住**看得见的那个 ▼/▶**：弹窗组头是把标记直接写进标签文本的
             // （`BuildHeaderLabel` 前缀），而标签自带左内缩（prefab 给类型图标留的位置）
             // ⇒ 固定 22 单位宽的老箭头区根本盖不到字形，点箭头其实落进"组名区"，
@@ -1103,6 +1119,60 @@ namespace ADOFAIEditorExtension.Features.PagerList
             AddHeaderHitArea(row, marker, PagerHeaderArea.Arrow, 0f, arrowZone);
             AddHeaderHitArea(row, marker, PagerHeaderArea.Name, arrowZone, 0f);
             return row;
+        }
+
+        /// <summary>
+        /// 给分页器组头铺一层自定义分组的颜色（分组定义取"事件"那一套）。只有**用户自定义分组**
+        /// （键 "custom:N"，见 <see cref="PagerGroupKey"/>）且设过颜色才建这一层；自动分组 /「未分组」/
+        /// 没设颜色（alpha 为 0）都不建 ⇒ 组头保持原样。行是每次重建时新建的（不像装饰栏走对象池），
+        /// 所以不需要考虑复用残留。异常只记日志：弹窗重建不能因为上色失败而中断。
+        ///
+        /// 色层外观整套复制 <paramref name="background"/>（= 原版选中白底）⇒ 圆角与四周留白和白底一致；
+        /// 与白底同父、插在白底的 siblingIndex 上（紧挨在它前面）⇒ 画在白底与组名之下。
+        /// 白底在本函数返回后会被 <c>SetGroupHighlight(null)</c> 关掉，色层是独立对象，不受影响。
+        /// </summary>
+        private static Image ApplyHeaderTint(GameObject row, Transform background, string groupKey)
+        {
+            if (row == null)
+                return null;
+            try
+            {
+                if (!DecoGroupState.TryGetCustomIndex(groupKey, out int index)
+                    || !DecoGroupState.TryGetCustomGroupColor(DecoGroupState.GroupSet.Event, index, out Color color))
+                    return null;
+
+                Image tint = DecoGroupState.CreateTintLayer(row.transform, background, "aee_pagerGroupTint", groupKey, WarnMissingTintBackground);
+                if (tint == null)
+                    return null;
+                tint.color = color;
+                tint.raycastTarget = false;  // 不吃射线：组头的箭头/组名点击区照旧生效
+                return tint;
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("分页器组头上色失败: " + e.Message);
+                return null;
+            }
+        }
+
+        /// <summary>"白底没有 Image 可抄"只记一次：弹窗每次重建都会为每个自定义分组再走一遍，不去重会刷屏。</summary>
+        private static readonly HashSet<string> tintBackgroundWarned = new HashSet<string>(StringComparer.Ordinal);
+
+        private static void WarnMissingTintBackground(string message)
+        {
+            if (tintBackgroundWarned.Add(message))
+                Main.Logger?.Log(message);
+        }
+
+        /// <summary>
+        /// 组头该有的组名颜色：行底下有我们铺的自定义色层时，按"色层叠在原版行底色上"的亮度取对比色
+        /// （浅底黑字、深底白字），没有色层就是原版白。三角 ▼/▶ 是写进同一段文本里的前缀，跟着一起变。
+        /// </summary>
+        private static Color ResolveHeaderLabelColor(GameObject row, Image tint)
+        {
+            if (tint == null)
+                return Color.white;
+            return DecoGroupState.ContrastTextColor(tint.color, DecoGroupState.HeaderBaseColor(row.GetComponent<Image>()), Color.white);
         }
 
         /// <summary>折叠标记按字体自检（同一字体只查一次；每次建行可能有好几个组头）。</summary>
@@ -3304,7 +3374,11 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 countLabel.gameObject.SetActive(false);
         }
 
-        /// <summary>高亮落点分组的头行（原版选中行样式：白底黑字），传 null 还原。</summary>
+        /// <summary>
+        /// 高亮落点分组的头行（原版选中行样式：白底黑字），传 null 还原。
+        /// 还原时回到"这一行该有的颜色"（<see cref="PagerGroupHeader.OriginalLabelColor"/>，有自定义组头色
+        /// 时就是按底色算出来的对比色），而不是写死白色 —— 否则浅色组头上组名与 ▼/▶ 又会看不清。
+        /// </summary>
         private static void SetGroupHighlight(string key)
         {
             for (int i = 0; i < rows.Count && i < slots.Count; i++)
@@ -3320,7 +3394,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     background.gameObject.SetActive(on);
                 TMP_Text label = item.Get<TMP_Text>("itemName");
                 if (label != null)
-                    label.color = on ? Color.black : Color.white;
+                {
+                    PagerGroupHeader marker = rows[i].GetComponent<PagerGroupHeader>();
+                    label.color = on ? Color.black : (marker != null ? marker.OriginalLabelColor : Color.white);
+                }
             }
         }
 

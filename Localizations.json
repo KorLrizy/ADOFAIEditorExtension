@@ -95,6 +95,12 @@
     "ChineseTraditional": "分組 {0} 符合 tag",
     "Korean": "그룹 {0} 태그"
   },
+  "aee.group.color": {
+    "English": "Group {0} color",
+    "ChineseSimplified": "分组 {0} 颜色",
+    "ChineseTraditional": "分組 {0} 顏色",
+    "Korean": "그룹 {0} 색상"
+  },
   "aee.group.tagPlaceholder": {
     "English": "empty = match nothing (first such group = the rest)",
     "ChineseSimplified": "留空 = 不按 tag 匹配（第一个这样的分组收纳其余装饰）",
