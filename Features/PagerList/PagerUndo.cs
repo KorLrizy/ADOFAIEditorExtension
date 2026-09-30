@@ -45,6 +45,32 @@ namespace ADOFAIEditorExtension.Features.PagerList
             if (after == null || after.Count == 0)
                 return;
 
+            RemapSelection(after, null, selectedBefore, currentBefore, currentIndexBefore, selectedIndices, out currentIndex, null);
+        }
+
+        /// <summary>
+        /// 同上，但对象被换掉时（§45.2：原版撤销把 `levelData` 整份换成快照副本 ⇒ 撤销后一个旧对象都不在了）
+        /// 再按**内容指纹**找回"同一个事件"：<paramref name="fingerprint"/> 相同的事件视为同一批，
+        /// 旧对象在 <paramref name="stackBefore"/> 同指纹事件里排第 k 个 ⇒ 对到 <paramref name="after"/> 里同指纹的第 k 个
+        /// （不够就取最后一个）。指纹完全相同的两个事件本来就分不出来，这样对最多是"在一模一样的两个里挑错一个"。
+        /// 先按引用找，找不到才走指纹（没换对象的撤销，比如只记选择的撤销点，照旧按引用）。
+        /// </summary>
+        internal static void RemapSelection(
+            IList<LevelEvent> after,
+            IList<LevelEvent> stackBefore,
+            IList<LevelEvent> selectedBefore,
+            LevelEvent currentBefore,
+            int currentIndexBefore,
+            ISet<int> selectedIndices,
+            out int currentIndex,
+            Func<LevelEvent, string> fingerprint)
+        {
+            currentIndex = -1;
+            if (selectedIndices != null)
+                selectedIndices.Clear();
+            if (after == null || after.Count == 0)
+                return;
+
             if (selectedIndices != null && selectedBefore != null)
             {
                 for (int i = 0; i < selectedBefore.Count; i++)
@@ -52,14 +78,14 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     LevelEvent e = selectedBefore[i];
                     if (e == null)
                         continue;
-                    int index = IndexOfReference(after, e);
+                    int index = MapToAfter(after, stackBefore, e, fingerprint);
                     if (index >= 0)
                         selectedIndices.Add(index);
                 }
             }
 
             if (currentBefore != null)
-                currentIndex = IndexOfReference(after, currentBefore);
+                currentIndex = MapToAfter(after, stackBefore, currentBefore, fingerprint);
             if (currentIndex < 0)
             {
                 int fallback = currentIndexBefore;
@@ -69,6 +95,98 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     fallback = after.Count - 1;
                 currentIndex = fallback;
             }
+        }
+
+        /// <summary>先按引用；找不到且给了指纹 ⇒ 按"同指纹第 k 个"对过去（见上面的重载说明）。</summary>
+        internal static int MapToAfter(IList<LevelEvent> after, IList<LevelEvent> stackBefore, LevelEvent target,
+            Func<LevelEvent, string> fingerprint)
+        {
+            int index = IndexOfReference(after, target);
+            if (index >= 0 || fingerprint == null || stackBefore == null || target == null)
+                return index;
+            string key = SafeFingerprint(fingerprint, target);
+            if (key == null)
+                return -1;
+
+            int rank = 0;
+            for (int i = 0; i < stackBefore.Count; i++)
+            {
+                if (ReferenceEquals(stackBefore[i], target))
+                    break;
+                if (stackBefore[i] != null && SafeFingerprint(fingerprint, stackBefore[i]) == key)
+                    rank++;
+            }
+
+            int seen = 0, last = -1;
+            for (int i = 0; i < after.Count; i++)
+            {
+                if (after[i] == null || SafeFingerprint(fingerprint, after[i]) != key)
+                    continue;
+                if (seen == rank)
+                    return i;
+                seen++;
+                last = i;
+            }
+            return last;
+        }
+
+        private static string SafeFingerprint(Func<LevelEvent, string> fingerprint, LevelEvent e)
+        {
+            try { return fingerprint(e); }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// 事件内容指纹（§45.2）：类型 + 所在砖 + data 里除 <paramref name="ignoreKey"/> 以外的全部键值（按键名排序）。
+        /// 忽略的是分组用的标签键 —— 撤销撤的往往正是"拖进别的组"，标签值前后不同，不能拿它当身份。
+        /// </summary>
+        internal static string Fingerprint(LevelEvent e, string ignoreKey)
+        {
+            if (e == null)
+                return null;
+            var sb = new System.Text.StringBuilder();
+            sb.Append((int)e.eventType).Append('@').Append(e.floor);
+            // r148 的 `LevelEvent.data` 是 protected，公开读口是 `GetData()`（返回同一张字典）
+            Dictionary<string, object> data = e.GetData();
+            if (data != null)
+            {
+                var keys = new List<string>(data.Keys);
+                keys.Sort(StringComparer.Ordinal);
+                for (int i = 0; i < keys.Count; i++)
+                {
+                    if (keys[i] == ignoreKey)
+                        continue;
+                    sb.Append('|').Append(keys[i]).Append('=');
+                    AppendValue(sb, data[keys[i]]);
+                }
+            }
+            return sb.ToString();
+        }
+
+        private static void AppendValue(System.Text.StringBuilder sb, object value)
+        {
+            if (value == null)
+            {
+                sb.Append("null");
+                return;
+            }
+            if (value is string s)
+            {
+                sb.Append('"').Append(s).Append('"');
+                return;
+            }
+            if (value is System.Collections.IEnumerable list)
+            {
+                sb.Append('[');
+                foreach (object item in list)
+                {
+                    AppendValue(sb, item);
+                    sb.Append(',');
+                }
+                sb.Append(']');
+                return;
+            }
+            sb.Append(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture));
         }
 
         /// <summary>
@@ -88,8 +206,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// <summary>
         /// 弹窗内按撤销 / 重做时，**文本输入框有焦点就不拦截**（按原版习惯：输入框里 Ctrl+Z 是文本撤销）。
         ///
-        /// 原版 `HandleKeyboardActions` 在执行键位表之前就有这道门（IL 已核：
-        /// `call get_userIsEditingAnInputField` → `brtrue ret`），而它的实现就是
+        /// 原版 `HandleKeyboardActions` 在执行键位表之前就有这道门（r265 IL 已核：
+        /// `if (showingPopup) {…return;}` 之后的 `call get_userIsEditingAnInputField` → `brtrue` 分支
+        /// 连同 prefsContainer / particleEditorContainer 的判断一起 `ret`），而它的实现就是
         /// "`EventSystem.currentSelectedGameObject` 上取到 `TMP_InputField` 且 `isFocused`"。
         /// 我们的前缀跑在原版方法体**之前**，所以这道门得自己补。
         /// 读不到（属性改名等）时按"正在输入"处理：宁可少拦截一次，也不抢走输入框自己的文本撤销。

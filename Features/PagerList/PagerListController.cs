@@ -3123,10 +3123,29 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 ? Mathf.Clamp(tab.eventIndex, 0, currentStack.Count - 1)
                 : 0;
             bool hadBatch = HasBatch();
+            List<LevelEvent> stackBefore = currentStack != null ? new List<LevelEvent>(currentStack) : null;
 
             // 撤销 / 重做本身：原版入口优先，PACL2 生效时若发现这次调用被它的接管绕过了，
             // 由 Pacl2Compat 补调 PACL2 自己的入口（见 Utils\Pacl2Compat.LevelUndoRedo）
             Pacl2Compat.LevelUndoRedo(editor, redo);
+
+            // §45.2（v2 实测）：原版撤销栈下，撤销之后的刷新（ShowPanel 等）在作用域外被调用会压一个"只记选择"的撤销点
+            // （原版 `InspectorPanel.ShowPanel` 自己开 `SaveStateScope(editor,false,false,false)` ⇒ SaveState），
+            // 下一次 Ctrl+Z 撤掉的就只是它 ⇒ "弹窗内撤销没反应"。所以整段刷新放进不存档作用域（skipSaving = true，
+            // 只把 changingState + 1）。PACL2 接管时不套：它的 SaveStateScope.Dispose 补丁会去收 currentState，
+            // 而 v3 实测 PACL2 下没有这个问题。
+            if (Pacl2Compat.IsBetterUndoRedoActive())
+            {
+                RefreshAfterUndoRedo(editor, tab, redo, what, hadBatch, stackBefore, selectedBefore, currentBefore, indexBefore);
+                return;
+            }
+            using (new SaveStateScope(editor, false, false, true))
+                RefreshAfterUndoRedo(editor, tab, redo, what, hadBatch, stackBefore, selectedBefore, currentBefore, indexBefore);
+        }
+
+        private static void RefreshAfterUndoRedo(scnEditor editor, InspectorTab tab, bool redo, string what, bool hadBatch,
+            List<LevelEvent> stackBefore, List<LevelEvent> selectedBefore, LevelEvent currentBefore, int indexBefore)
+        {
 
             // 批量态：撤销按引用增删（PACL2）或整份换掉（原版）⇒ 先按引用剔除已经不在关卡里的事件
             // （不足 2 个就退出多选，与原版撤销后"批量失效 ⇒ 退出"的旧行为一致）
@@ -3154,7 +3173,11 @@ namespace ADOFAIEditorExtension.Features.PagerList
 
             selectedIndices.Clear();
             selectionAnchor = -1;
-            PagerUndo.RemapSelection(stack, selectedBefore, currentBefore, indexBefore, selectedIndices, out int currentIndex);
+            // 原版撤销换掉了事件对象 ⇒ 按内容指纹（忽略分组标签键）把选中与当前事件对回去（§45.2）；
+            // PACL2 的增量回滚对象不变，按引用就能对上
+            string tagKey = DecoGroupActions.GroupTagKeyOf(stack[0], DecoGroupState.GroupSet.Event);
+            PagerUndo.RemapSelection(stack, stackBefore, selectedBefore, currentBefore, indexBefore, selectedIndices,
+                out int currentIndex, e => PagerUndo.Fingerprint(e, tagKey));
             if (currentIndex < 0 || currentIndex >= stack.Count)
                 currentIndex = 0;
             currentEvent = stack[currentIndex];
