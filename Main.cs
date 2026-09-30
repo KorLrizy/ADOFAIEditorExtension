@@ -68,6 +68,9 @@ namespace ADOFAIEditorExtension
 
         private static Harmony harmony;
 
+        /// <summary>模组启用期间的 Harmony 实例（运行时按需给别的模组挂补丁用，停用时随 UnpatchAll 一起撤掉）；未启用为 null。</summary>
+        internal static Harmony HarmonyInstance => harmony;
+
         public static UnityModManager.ModEntry ModEntry { get; private set; }
 
         /// <summary>

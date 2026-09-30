@@ -2888,28 +2888,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
             Main.Logger?.Log("多选批量编辑：" + message);
         }
 
-        /// <summary>PACL2 下"同组重排被忽略"只提示一次（日志没有去重，反复拖会刷屏）。</summary>
-        private static bool pacl2ReorderNoticeLogged;
-
-        private static void LogPacl2ReorderIgnoredOnce()
-        {
-            if (pacl2ReorderNoticeLogged)
-                return;
-            pacl2ReorderNoticeLogged = true;
-            LogMultiEdit("PACL2 的 BetterUndoRedo 接管了撤销栈，事件顺序改动无法正确撤销 ⇒ 同组重排已忽略（跨组拖动只改归属）");
-        }
-
-        /// <summary>PACL2 下"既改了归属、又压掉了排序"的提示，同样只打一次。</summary>
-        private static bool pacl2MixedDropNoticeLogged;
-
-        private static void LogPacl2MixedDropOnce()
-        {
-            if (pacl2MixedDropNoticeLogged)
-                return;
-            pacl2MixedDropNoticeLogged = true;
-            LogMultiEdit("PACL2 的 BetterUndoRedo 下只改了归属、事件顺序保持不变（避免撤销时事件被追加到末尾）");
-        }
-
         /// <summary>弹窗空白处被点击（§37）：消除"点了没反应、日志空白"的盲区。</summary>
         internal static void LogPopupBlankClick()
         {
@@ -3337,16 +3315,17 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 return;
             }
             SetGroupHighlight(target.Key);
-            // PACL2 BetterUndoRedo 下"纯排序"松手会被忽略（见 Utils\Pacl2Compat.cs）⇒ 不画落点白线/小方块，
-            // 只保留分组高亮，免得给一个不会生效的落点做反馈
+            // PACL2 BetterUndoRedo 下：反射绑定可用时顺序改动**能**精确撤销（我们给撤销栈挂了一层顺序快照，
+            // 见 Utils\Pacl2Compat.cs 与 ApplyDrop）⇒ 照常画线；绑定不可用（版本不符）才不给落点白线，
+            // 免得给一个不会生效的落点做反馈
             bool pacl2 = Pacl2Compat.IsBetterUndoRedoActive();
-            if (pacl2 && !hasReassign)
+            if (pacl2 && !Pacl2Compat.IsEventReorderAvailable())
             {
                 HideDropIndicator();
                 return;
             }
-            // PACL2 下跨组拖动只改归属、不改顺序（见 ApplyDrop）⇒ 同样不画插入线
-            if (anchorInMoving || pacl2)
+            // 落在正在移动的行上 ⇒ 不排序（见 ApplyDrop）；有改归属的只改归属、没有的什么都不做 ⇒ 不画插入线
+            if (anchorInMoving)
             {
                 ResolveDropObjects();
                 if (dropLine != null && dropLine.gameObject.activeSelf)
@@ -3678,32 +3657,29 @@ namespace ADOFAIEditorExtension.Features.PagerList
             int insertAt = -1;
             bool move = !anchorInMoving && TryPlanMove(editor, stack, moving, anchor, before, out movingEvents, out insertAt);
 
-            // PACL2 BetterUndoRedo 下 `levelData.levelEvents` 的**顺序**记录不下来（详见 Utils\Pacl2Compat.cs）：
-            // PACL2 只 patch 了 `List<LevelEvent>.Remove(object)`，`List.Insert` 完全没有 ⇒ 撤销时
-            // `SaveStatePatch.UndoOrRedo` 会 `editor.events.Add(ev)` 把事件**追加到末尾**，等于复制/错位。
-            // 所以这里不再移动顺序：**跨组拖动只改归属**（tag / 手动归属是 set_Item 值改动，PACL2 记得到，
-            // 一步撤销干净），纯同组重排则整个忽略（并在拖动时就不给落点白线，见 UpdateDropFeedback）。
+            // PACL2 BetterUndoRedo 开启时，`levelData.levelEvents` 的顺序改动**不能**靠 PACL2 的增量记录撤销：
+            // 它只 patch 了 `List<LevelEvent>.Remove(object)`、没 patch `Insert`，而 `SaveStatePatch.UndoOrRedo`
+            // 回放 Remove 记录时统一 `events.Add(ev)`（追加末尾、无下标）⇒ 永远回不到原位。
+            // 离线穷举（`Replay` 模拟器，见 §44.6）已证：长度 ≥ 4 时绝大多数"整块移动"根本无法用 changedEvents 表达，
+            // 所以这里不去编造重排记录，而是在 scope 内读 PACL2 的 `SaveStatePatch.currentState`：
+            //   · 读得到 ⇒ 顺序改动照做，scope 结束（PACL2 已把增量搬进 currentState）后再挂一层带
+            //     "改动前 / 改动后顺序快照"的自定义 LevelState 回撤销栈，归属 + 顺序**同一步**撤销/重做；
+            //   · 读不到（或反射绑定缺失）⇒ 退回原行为：只改归属、不动顺序，并记日志说明原因。
             bool pacl2 = Pacl2Compat.IsBetterUndoRedoActive();
-            // PACL2 下**任何**顺序改动都压掉（以前只压了"纯排序"，跨组拖动仍会改顺序 ⇒ 撤销时事件被追加到末尾，§44.5）：
-            // 纯排序 ⇒ 下面整个忽略；跨组 ⇒ 只改归属
-            bool reorderSuppressed = pacl2 && move;
-            if (reorderSuppressed)
-                move = false;
+            bool reorderSuppressed = false;
+            Pacl2Compat.Pacl2ReorderScope reorderScope = null;
+            bool reorderLogged = false;
 
-            // 诊断：拖的是哪一行、当时选中了哪些、实际搬了哪些（排查"多选只进了一个"一类问题靠这行）
+            // 诊断：拖的是哪一行、当时选中了哪些、实际搬了哪些（排查"多选只进了一个"一类问题靠这行）。
+            // 注意这时还没建 scope，所以 PACL2 的备注只能说明"本来要改顺序"；真实结果在下面 try 里再核一次。
             Main.Logger?.Log(string.Format(
-                "分页器直选：拖动 index={0}，选中集=[{1}]，移动=[{2}]，目标={3}，锚点={4}，改归属={5} 个，排序={6}{7}",
+                "分页器直选：拖动 index={0}，选中集=[{1}]，移动=[{2}]，目标={3}，锚点={4}，改归属={5} 个，排序={6}",
                 draggingIndex, string.Join(",", SortedSelection()), string.Join(",", moving), target.Key,
                 target.IsHeaderDrop ? "组尾" : anchorInMoving ? "移动集合内部" : (target.Before ? "行前" : "行后"),
-                toAssign.Count, move ? "是" : "否",
-                reorderSuppressed ? (toAssign.Count > 0 ? "（PACL2 下只改归属不改顺序）" : "（PACL2 下同组重排被忽略）") : ""));
+                toAssign.Count, move ? "是" : "否"));
 
             if (toAssign.Count == 0 && !move)
-            {
-                if (reorderSuppressed)
-                    LogPacl2ReorderIgnoredOnce();
                 return;                            // 落在自己身上 / 已经在目标位置 / 归属本来就是这个组：不留撤销点
-            }
 
             // 选中集按对象记下来：排序/改归属之后下标会变（顺序被抑制时下标不变，这个映射依然是恒等的）
             var selectedBefore = new List<LevelEvent>();
@@ -3715,8 +3691,24 @@ namespace ADOFAIEditorExtension.Features.PagerList
             {
                 using (new SaveStateScope(editor, false, true, false))
                 {
-                    // 归属是 set_Item 值改动，靠这个 scope 压出的 DefaultLevelState 记进 changedEventValues；
-                    // 顺序则一步都不动（move 已被抑制），所以不需要（也不能）在这里 ApplyMove
+                    // 归属是 set_Item 值改动，靠这个 scope 压出的 DefaultLevelState 记进 changedEventValues。
+                    // 重排 scope 必须在**里面**建：它要读 PACL2 为这个 SaveStateScope 设的 `currentState`，
+                    // 并且要抓"我们动手之前"的 `levelData.levelEvents` 快照。
+                    if (pacl2 && move)
+                    {
+                        bool available = Pacl2Compat.IsEventReorderAvailable();
+                        reorderScope = available ? Pacl2Compat.TryBeginEventReorderScope(editor) : null;
+                        if (reorderScope == null || !reorderScope.Usable)
+                        {
+                            reorderScope = null;
+                            reorderSuppressed = true;
+                            move = false;
+                            Main.Logger?.Log(available
+                                ? "PACL2 撤销记录器未生效（currentState 为空）⇒ 本次只改归属、不改顺序"
+                                : "PACL2 撤销栈反射绑定不可用（版本不符？）⇒ 本次只改归属、不改顺序");
+                        }
+                    }
+
                     for (int i = 0; i < toAssign.Count; i++)
                         DecoGroupActions.ApplyAssignment(toAssign[i], assignment, DecoGroupState.GroupSet.Event);
                     if (move)
@@ -3725,15 +3717,24 @@ namespace ADOFAIEditorExtension.Features.PagerList
                         editor.ApplyEventsToFloors();
                     }
                 }
+                // 必须在 `SaveStateScope` 的 Dispose **之后**：PACL2 的 `SaveStateScopeDispose` 已经把增量记录
+                // 搬进 `DefaultLevelState`，这时才能清掉其中帮倒忙的 changedEvents 并登记顺序记录（见 Pacl2Compat）
+                if (move && reorderScope != null)
+                    reorderLogged = reorderScope.Finish();
             }
             catch (Exception e)
             {
+                // 中途抛了：按事件表的实际现状登记（改了多少记多少），别让已改的顺序变成撤销不了
+                if (move && reorderScope != null)
+                    reorderLogged = reorderScope.Finish();
                 Main.Logger?.Log("事件拖动失败: " + e.Message);
                 return;
             }
 
-            if (reorderSuppressed)
-                LogPacl2MixedDropOnce();
+            if (reorderScope != null && !reorderSuppressed)
+                Main.Logger?.Log(reorderLogged
+                    ? "分页器直选：PACL2 下已登记顺序撤销记录（归属 + 顺序同一步撤销）"
+                    : "分页器直选：PACL2 下顺序撤销记录登记失败，本次顺序改动撤销时不会还原（原因见上一行）");
 
             RemapSelectionAfterDrop(editor, selectedBefore);
             ReloadRows();
