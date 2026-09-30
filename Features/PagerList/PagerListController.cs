@@ -3269,12 +3269,14 @@ namespace ADOFAIEditorExtension.Features.PagerList
             SetGroupHighlight(target.Key);
             // PACL2 BetterUndoRedo 下"纯排序"松手会被忽略（见 Utils\Pacl2Compat.cs）⇒ 不画落点白线/小方块，
             // 只保留分组高亮，免得给一个不会生效的落点做反馈
-            if (Pacl2Compat.IsBetterUndoRedoActive() && !hasReassign)
+            bool pacl2 = Pacl2Compat.IsBetterUndoRedoActive();
+            if (pacl2 && !hasReassign)
             {
                 HideDropIndicator();
                 return;
             }
-            if (anchorInMoving)
+            // PACL2 下跨组拖动只改归属、不改顺序（见 ApplyDrop）⇒ 同样不画插入线
+            if (anchorInMoving || pacl2)
             {
                 ResolveDropObjects();
                 if (dropLine != null && dropLine.gameObject.activeSelf)
@@ -3605,8 +3607,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
             // 所以这里不再移动顺序：**跨组拖动只改归属**（tag / 手动归属是 set_Item 值改动，PACL2 记得到，
             // 一步撤销干净），纯同组重排则整个忽略（并在拖动时就不给落点白线，见 UpdateDropFeedback）。
             bool pacl2 = Pacl2Compat.IsBetterUndoRedoActive();
-            // 纯排序（没有要改归属的行）时，PACL2 下松手不会有任何效果 ⇒ 整个忽略
-            bool reorderSuppressed = pacl2 && move && toAssign.Count == 0 && !HasPagerReassign(draggingIndex, target);
+            // PACL2 下**任何**顺序改动都压掉（以前只压了"纯排序"，跨组拖动仍会改顺序 ⇒ 撤销时事件被追加到末尾，§44.5）：
+            // 纯排序 ⇒ 下面整个忽略；跨组 ⇒ 只改归属
+            bool reorderSuppressed = pacl2 && move;
             if (reorderSuppressed)
                 move = false;
 
@@ -3616,7 +3619,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 draggingIndex, string.Join(",", SortedSelection()), string.Join(",", moving), target.Key,
                 target.IsHeaderDrop ? "组尾" : anchorInMoving ? "移动集合内部" : (target.Before ? "行前" : "行后"),
                 toAssign.Count, move ? "是" : "否",
-                reorderSuppressed ? "（PACL2 下同组重排被忽略）" : ""));
+                reorderSuppressed ? (toAssign.Count > 0 ? "（PACL2 下只改归属不改顺序）" : "（PACL2 下同组重排被忽略）") : ""));
 
             if (toAssign.Count == 0 && !move)
             {
