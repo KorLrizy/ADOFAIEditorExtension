@@ -309,6 +309,85 @@ namespace ADOFAIEditorExtension.Patches
         }
     }
 
+    /// <summary>
+    /// 颜色控件（原版取色器 / hex 输入框）值写回后通知模组刷新。
+    ///
+    /// 目标是 <c>PropertyControl_Color.OnChange(string)</c>（r265 IL 已核）：
+    ///  · Setup(true) 里把 <c>colorField.onChange += OnChange</c>（唯一挂载点）；
+    ///  · OnChange 内部先把值写进 LevelEvent（`selectedEvent[propertyInfo.name] = value`，包在 SaveStateScope 里），
+    ///    再做背景/装饰刷新、ApplyTileChanges、OnValueChange ⇒ 后置补丁跑完时 data 里已是新值，与
+    ///    ValueChangePatch1 读 `levelEvent[___propertyInfo.name]` 的写法一致；
+    ///  · 两条用户路径都汇到它：hex 输入框 onEndEdit（ColorField.&lt;Awake&gt;b__12_1 → onChange.Invoke）
+    ///    与取色器确认（PickerData.set_text → colorField.onChange.Invoke）。
+    ///    面板回填当前值走的是 PropertyControl_Color.set_text → ColorField.SetValue（不触发 onChange，IL 已核），
+    ///    所以不会在打开面板/刷新时误报"设置变了"。
+    /// 这里只关心本模组设置事件（type == Main.Aee.type）的颜色字段（groupColorN / eventGroupColorN）。
+    /// </summary>
+    [HarmonyPatch]
+    internal static class ValueChangePatch3
+    {
+        internal static IEnumerable<MethodBase> TargetMethods()
+        {
+            MethodInfo onChange = AccessTools.Method(typeof(PropertyControl_Color), "OnChange", new[] { typeof(string) });
+            if (onChange != null)
+            {
+                yield return onChange;
+                yield break;
+            }
+            // 目标方法找不到（游戏换版本）：不产出目标 ⇒ 这个补丁类什么都不打，只留一行日志便于排查
+            Main.Logger?.Log("找不到 PropertyControl_Color.OnChange(String)，颜色设置变化不会触发即时刷新");
+        }
+
+        internal static void Postfix(PropertiesPanel ___propertiesPanel, ADOFAI.PropertyInfo ___propertyInfo)
+        {
+            if (Main.Aee == null || ___propertiesPanel == null || ___propertyInfo == null || ___propertyInfo.levelEventInfo == null)
+                return;
+            if ((int)___propertyInfo.levelEventInfo.type != Main.Aee.type)
+                return;
+            try
+            {
+                LevelEvent levelEvent = ___propertiesPanel.inspectorPanel != null ? ___propertiesPanel.inspectorPanel.selectedEvent : null;
+                if (levelEvent == null)
+                    return;
+                Main.OnSettingChanged(levelEvent, ___propertyInfo.name, null, levelEvent[___propertyInfo.name]);
+            }
+            catch (Exception e)
+            {
+                // 模组侧的刷新失败不能冒进原版 OnChange
+                Main.Logger?.Log("颜色设置变化回调异常: " + e);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 常驻：原版面板构建 / 颜色控件这条链路上有些异常会被原版自己吞掉（日志里什么都看不到，
+    /// 表现为"面板少了几行 / 点了没反应"），这里只**记录**、不吞：Finalizer 原样返回 __exception，
+    /// 行为与没有这个补丁完全一致，只是多一条能定位问题的日志。
+    /// </summary>
+    [HarmonyPatch]
+    internal static class SettingsPanelExceptionProbe
+    {
+        internal static IEnumerable<MethodBase> TargetMethods()
+        {
+            var targets = new List<MethodBase>();
+            void Add(MethodBase m) { if (m != null && !targets.Contains(m)) targets.Add(m); }
+            Add(AccessTools.Method(typeof(PropertiesPanel), "SetProperties"));
+            Add(AccessTools.Method(typeof(PropertiesPanel), "RenderControl"));
+            Add(AccessTools.Method(typeof(PropertyControl_Color), "Setup", new[] { typeof(bool) }));
+            Add(AccessTools.Method(typeof(PropertyControl_Color), "OnChange", new[] { typeof(string) }));
+            Add(AccessTools.PropertySetter(typeof(PropertyControl_Color), "text"));
+            return targets;
+        }
+
+        internal static Exception Finalizer(Exception __exception, MethodBase __originalMethod)
+        {
+            if (__exception != null)
+                Main.Logger?.Log("原版面板链路异常：" + (__originalMethod != null ? __originalMethod.DeclaringType?.Name + "." + __originalMethod.Name : "?")
+                    + " 抛出异常: " + __exception);
+            return __exception;
+        }
+    }
+
     /// <summary>面板属性刷新后重新套用控件可见性列表（自定义分组行的显示/隐藏）。</summary>
     [HarmonyPatch(typeof(PropertiesPanel), "SetProperties")]
     internal static class ActiveChildPatch

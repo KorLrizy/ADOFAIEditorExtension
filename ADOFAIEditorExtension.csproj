@@ -119,6 +119,7 @@
     <Compile Include="PropertyCollection\Property.cs" />
     <Compile Include="PropertyCollection\Property_Bool.cs" />
     <Compile Include="PropertyCollection\Property_Button.cs" />
+    <Compile Include="PropertyCollection\Property_Color.cs" />
     <Compile Include="PropertyCollection\Property_Enum.cs" />
     <Compile Include="PropertyCollection\Property_InputField.cs" />
     <Compile Include="Settings\SettingsStore.cs" />

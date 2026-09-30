@@ -3,7 +3,9 @@ using ADOFAI.LevelEditor.Controls;
 using ADOFAIEditorExtension.Utils;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace ADOFAIEditorExtension.Features.DecoGrouping
 {
@@ -33,6 +35,16 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
     internal static class DecoGroupState
     {
         internal const int MaxCustomGroups = 20;
+
+        /// <summary>
+        /// 自定义分组组头颜色的**默认值**：纯白、alpha = 0（hex "ffffff00"）。
+        /// alpha = 0 即"没有设过颜色" ⇒ 组头保持原版外观（见 <see cref="TryGetCustomGroupColor"/>）；
+        /// 之所以不用"白色不透明"当默认，是因为那会把所有组头都刷成白底、覆盖原版样式。
+        /// </summary>
+        internal const string DefaultGroupColorHex = "ffffff00";
+
+        /// <summary>默认色的 Color 形式（面板上 Property_Color 的 value_default，会被格式化成 <see cref="DefaultGroupColorHex"/>）。</summary>
+        internal static readonly Color DefaultGroupColor = new Color(1f, 1f, 1f, 0f);
 
         /// <summary>当前面板的显示槽位（头行 + 行），顺序即列表显示顺序。</summary>
         internal static readonly List<DecoGroupSlot> Slots = new List<DecoGroupSlot>();
@@ -545,11 +557,15 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         internal static string NameKey(int index) => NameKey(GroupSet.Decoration, index);
         internal static string TagKey(int index) => TagKey(GroupSet.Decoration, index);
         internal static string DeleteKey(int index) => DeleteKey(GroupSet.Decoration, index);
+        internal static string ColorKey(int index) => ColorKey(GroupSet.Decoration, index);
 
         /// <summary>第 index 行（0 基）在指定那一套里的字段名；两套用不同前缀，互不干扰（§17.2）。</summary>
         internal static string NameKey(GroupSet set, int index) => (set == GroupSet.Event ? "eventGroupName" : "groupName") + index;
         internal static string TagKey(GroupSet set, int index) => (set == GroupSet.Event ? "eventGroupTag" : "groupTag") + index;
         internal static string DeleteKey(GroupSet set, int index) => (set == GroupSet.Event ? "eventDeleteGroup" : "deleteGroup") + index;
+
+        /// <summary>第 index 行的组头颜色字段名（值同原版 color 属性：小写 hex 字符串，见 Property_Color）。</summary>
+        internal static string ColorKey(GroupSet set, int index) => (set == GroupSet.Event ? "eventGroupColor" : "groupColor") + index;
 
         /// <summary>当前生效的自定义分组行数（0..MaxCustomGroups）—— 装饰那一套（兼容旧调用）。</summary>
         internal static int CustomGroupCount => customGroupCount;
@@ -586,6 +602,275 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             }
             catch { }
             return "";
+        }
+
+        // ---------------------------------------------------------------- 组头颜色
+
+        /// <summary>
+        /// 分组键 → 自定义分组下标：只有 "custom:" 后面是**非负十进制整数**才算（custom:0 / custom:12…）。
+        /// 自动分组（type:*、tag:*）、"custom:rest"（「未分组」）以及 "custom:"、负数、带符号/空白/千位分隔符
+        /// 的键全部返回 false ⇒ 这些组头永远不着色（需求 3）。
+        /// 用 NumberStyles.None 而不是 int.TryParse 的默认宽松解析：默认会接受 "+5"、" 5 "、"1,2" 之类，
+        /// 那些不是我们生成的键，按"不认识"处理更安全。
+        /// </summary>
+        internal static bool TryGetCustomIndex(string groupKey, out int index)
+        {
+            index = -1;
+            if (string.IsNullOrEmpty(groupKey))
+                return false;
+            const string prefix = "custom:";
+            if (!groupKey.StartsWith(prefix, StringComparison.Ordinal))
+                return false;
+            string suffix = groupKey.Substring(prefix.Length);
+            if (suffix.Length == 0)
+                return false;
+            if (!int.TryParse(suffix, NumberStyles.None, CultureInfo.InvariantCulture, out int parsed))
+                return false;
+            index = parsed;
+            return true;
+        }
+
+        /// <summary>
+        /// 纯逻辑的"颜色值 → Color"解析（不碰任何游戏对象，便于离线用反射直接验证）：
+        ///  · string：允许前导 '#'（大小写都行），接受 6 位（rrggbb，视为不透明）或 8 位（rrggbbaa）十六进制；
+        ///    两端空白先去掉，其余长度 / 含非十六进制字符一律失败；
+        ///  · UnityEngine.Color：原样返回（万一某个版本把颜色对象直接塞进 data，或调用方直接给 Color）；
+        ///  · 其余（null、空串、纯数字、其它类型）一律失败。
+        ///
+        /// 不用 ColorUtility.TryParseHtmlString：一是它是引擎侧 icall，离线（CoreCLR）调不了、没法离线验证；
+        /// 二是它对 "#fff"、命名色之类也放行，与"游戏里颜色属性就是 6/8 位 hex 字符串"的约定不一致。
+        /// </summary>
+        internal static bool TryParseGroupColor(object raw, out Color color)
+        {
+            color = default;
+            if (raw == null)
+                return false;
+            if (raw is Color value)
+            {
+                color = value;
+                return true;
+            }
+
+            string text = raw as string;
+            if (text == null)
+                return false;
+            text = text.Trim();
+            if (text.Length > 0 && text[0] == '#')
+                text = text.Substring(1);
+            if (text.Length != 6 && text.Length != 8)
+                return false;
+            if (!uint.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint number))
+                return false;
+
+            int r, g, b, a;
+            if (text.Length == 6)
+            {
+                r = (int)((number >> 16) & 0xFF);
+                g = (int)((number >> 8) & 0xFF);
+                b = (int)(number & 0xFF);
+                a = 0xFF;      // 6 位 hex = 不透明（与 RDUtils.HexToColor 同款约定）
+            }
+            else
+            {
+                r = (int)((number >> 24) & 0xFF);
+                g = (int)((number >> 16) & 0xFF);
+                b = (int)((number >> 8) & 0xFF);
+                a = (int)(number & 0xFF);
+            }
+            color = new Color(r / 255f, g / 255f, b / 255f, a / 255f);
+            return true;
+        }
+
+        /// <summary>
+        /// 读第 index 行自定义分组的**生效**组头颜色（渲染层用它决定要不要着色）。
+        /// 返回 false 的三种情况：下标越界（不是用户自定义分组的行）、值解析失败、
+        /// 以及 **alpha 为 0**（= 默认值"没设颜色"）。调用方一律按"这行不着色"处理。
+        /// 值从设置事件的 data 里按**非泛型**索引取：原版约定是 hex 字符串，
+        /// 但也容忍 UnityEngine.Color（TryParseGroupColor 处理），取值本身出错同样当作没有颜色。
+        /// </summary>
+        internal static bool TryGetCustomGroupColor(GroupSet set, int index, out Color color)
+        {
+            color = default;
+            if (index < 0 || index >= CountOf(set))
+                return false;
+            try
+            {
+                LevelEvent settings = Main.GetSettingsEvent();
+                if (settings == null)
+                    return false;
+                if (!TryParseGroupColor(settings[ColorKey(set, index)], out color))
+                    return false;
+            }
+            catch
+            {
+                return false;
+            }
+            return color.a > 0f;
+        }
+
+        /// <summary>
+        /// 落盘用：把 data 里的颜色原样读出并规范成 8 位小写 hex；缺失 / 非法 / 取不到都回落到
+        /// <see cref="DefaultGroupColorHex"/>（宽松解析，绝不抛）。
+        /// </summary>
+        internal static string ReadCustomGroupColorHex(LevelEvent settings, GroupSet set, int index)
+        {
+            if (settings == null)
+                return DefaultGroupColorHex;
+            object raw;
+            try
+            {
+                raw = settings[ColorKey(set, index)];
+            }
+            catch
+            {
+                return DefaultGroupColorHex;
+            }
+            return TryParseGroupColor(raw, out Color color) ? ToHex(color) : DefaultGroupColorHex;
+        }
+
+        /// <summary>Color → 8 位小写 hex（rrggbbaa）；与 Property_Color 的默认值算法一致（Clamp01 × 255 取整）。</summary>
+        internal static string ToHex(Color color)
+        {
+            return string.Format("{0:x2}{1:x2}{2:x2}{3:x2}", ToByte(color.r), ToByte(color.g), ToByte(color.b), ToByte(color.a));
+        }
+
+        private static byte ToByte(float value)
+        {
+            return (byte)(Mathf.Clamp01(value) * 255f);
+        }
+
+        /// <summary>
+        /// 组头底色的相对亮度：按 sRGB 三通道加权（0.2126 r + 0.7152 g + 0.0722 b）。
+        /// **直接拿 0–1 的通道值算，不做 gamma 线性化**：这里只需要一个"浅底 / 深底"的稳定判据，
+        /// 游戏里原版自己也是按感知亮度选黑白字（`ListItem.ShowSelectionBackground` 对白底写死黑字），
+        /// 多一步 pow(2.2) 只会让阈值位置和原版肉眼判断对不上，对观感没有好处。
+        /// </summary>
+        internal static float RelativeLuminance(Color color)
+        {
+            return 0.2126f * color.r + 0.7152f * color.g + 0.0722f * color.b;
+        }
+
+        /// <summary>
+        /// 组头上文字 / 图标的对比色（纯逻辑，便于离线验证）：
+        ///  · 先把半透明组头色**叠在组头原本的底色上**（normal 混合）：有效色 = tint.rgb·a + base.rgb·(1-a)；
+        ///    实际观感正是"色层盖在原版行底色上"，只看 tint.rgb 会在浅色半透明色上误判；
+        ///  · 亮度 > 0.5 ⇒ 底色偏浅 ⇒ 返回黑色；否则返回 <paramref name="lightText"/>（原版文字色，通常是白）。
+        /// 0.5 是"能同时看清黑字与白字"的分界；纯白 a=1 判黑、纯红（亮度 0.2126）判白、纯黄（0.9278）判黑。
+        /// 色层不存在时调用方直接传各自的原色，不走这里。
+        /// </summary>
+        internal static Color ContrastTextColor(Color tint, Color baseColor, Color lightText)
+        {
+            float alpha = Mathf.Clamp01(tint.a);
+            var blended = new Color(
+                tint.r * alpha + baseColor.r * (1f - alpha),
+                tint.g * alpha + baseColor.g * (1f - alpha),
+                tint.b * alpha + baseColor.b * (1f - alpha),
+                1f);
+            return RelativeLuminance(blended) > 0.5f ? Color.black : lightText;
+        }
+
+        /// <summary>
+        /// 组头的"原本底色"：行根上的原版 Image（行 prefab 的底板）。取不到 —— 或它本来就近乎全透明
+        /// （原版不少行根 Image 的颜色 alpha 是 0，靠子物体画外观）—— 一律当黑色：
+        /// 半透明自定义色叠在"看不见的底"上，观感就是叠在面板深色背景上，按黑底判对比色最接近实际。
+        /// </summary>
+        internal static Color HeaderBaseColor(Graphic graphic)
+        {
+            Color color = graphic != null ? graphic.color : default;
+            return color.a > 0.01f ? color : Color.black;
+        }
+
+        /// <summary>
+        /// 把白底（`ListItem.selectionBackground`）的外观**完整**克隆到色层上：sprite / 绘制类型 / 九宫格
+        /// 缩放 / 是否画中心 / 材质。白底是"圆角 + 四周留白"的九宫格图，色层只铺一个纯色矩形的话，
+        /// 看着就是直角贴边的一大块（与选中行的白底完全不是一回事），所以必须连绘制参数一起抄。
+        /// </summary>
+        internal static void CloneGraphicSettings(Image target, Image source)
+        {
+            if (target == null || source == null)
+                return;
+            target.sprite = source.sprite;
+            target.type = source.type;
+            target.pixelsPerUnitMultiplier = source.pixelsPerUnitMultiplier;
+            target.fillCenter = source.fillCenter;
+            target.preserveAspect = source.preserveAspect;
+            if (source.material != null && source.material != target.defaultMaterial)
+                target.material = source.material;
+        }
+
+        /// <summary>
+        /// 在 <paramref name="row"/> 下建组头色层：与白底 <paramref name="background"/> **同一个父节点**、
+        /// 插在它的 siblingIndex 上（= 紧挨在白底前面）⇒ 画在白底与其它内容之下。
+        /// RectTransform 的锚点 / pivot / 偏移 / 缩放 / 旋转整套复制白底 ⇒ 圆角与四周留白与白底一模一样。
+        ///
+        /// 为什么不做成白底的子物体：装饰栏的 `StripRow` 会把不在保留名单里的顶层分支整个关掉、白底平时
+        /// 也是 inactive（只有选中/拖放高亮才亮），做成子物体会连色层一起被关掉。白底 inactive 时它的
+        /// RectTransform 仍然有效（RectTransform 的几何不依赖激活状态），所以复制不受影响。
+        ///
+        /// <paramref name="warn"/> 只在"白底没有可复制的 Image"这种异常结构上调用一次（逐行调用会刷屏），
+        /// 此时留下的色层是纯色矩形 —— 有颜色但没圆角，属于可接受的降级。
+        /// </summary>
+        internal static Image CreateTintLayer(Transform row, Transform background, string name, string groupKey, Action<string> warn)
+        {
+            if (row == null)
+                return null;
+
+            // 白底可能在它自己身上带 Image，也可能只在子物体上（静态 IL 定不了 prefab 结构）⇒ 两处都找
+            Image source = null;
+            RectTransform geometry = background as RectTransform;
+            if (background != null)
+            {
+                source = background.GetComponent<Image>();
+                if (source == null)
+                    source = background.GetComponentInChildren<Image>(true);
+                if (geometry == null)
+                    geometry = background.GetComponent<RectTransform>();
+                if (geometry == null)
+                    geometry = background.GetComponentInChildren<RectTransform>(true);
+            }
+
+            var go = new GameObject(name, typeof(RectTransform), typeof(Image));
+            var rect = (RectTransform)go.transform;
+            var parent = geometry != null ? geometry.parent : row;
+            rect.SetParent(parent, false);
+
+            if (geometry != null)
+            {
+                rect.anchorMin = geometry.anchorMin;
+                rect.anchorMax = geometry.anchorMax;
+                rect.pivot = geometry.pivot;
+                rect.offsetMin = geometry.offsetMin;
+                rect.offsetMax = geometry.offsetMax;
+                rect.sizeDelta = geometry.sizeDelta;
+                rect.anchoredPosition = geometry.anchoredPosition;
+                rect.localScale = geometry.localScale;
+                rect.localRotation = geometry.localRotation;
+            }
+            else
+            {
+                // 连白底的 RectTransform 都拿不到：退回铺满整行（旧行为，至少颜色是有的，只是没圆角）
+                rect.anchorMin = Vector2.zero;
+                rect.anchorMax = Vector2.one;
+                rect.offsetMin = Vector2.zero;
+                rect.offsetMax = Vector2.zero;
+            }
+
+            Image image = go.GetComponent<Image>();
+            image.raycastTarget = false;   // 不吃射线：组头的箭头/组名/眼睛/锁区域照旧生效
+            if (source != null)
+                CloneGraphicSettings(image, source);
+            else
+                warn?.Invoke(string.Format("组头 {0}找不到可复制的选中白底（无 Image），色层退化为贴边矩形；background={1} 父={2}",
+                    string.IsNullOrEmpty(groupKey) ? "" : groupKey + " ", background != null ? background.name : "无",
+                    parent != null ? parent.name : "无"));
+
+            // 插在白底**前面**：uGUI 按层级顺序绘制，先画的在下层。
+            // 白底 inactive 时它在父节点里的 siblingIndex 依然有效（列表里看不见的孩子照样占位）。
+            if (geometry != null && geometry != rect)
+                rect.SetSiblingIndex(geometry.GetSiblingIndex());
+            else
+                rect.SetAsFirstSibling();
+            return image;
         }
 
         /// <summary>读取生效的自定义分组（名称 + 匹配 tag，tag 已去空白）—— 装饰那一套（兼容旧调用）。</summary>
@@ -645,9 +930,13 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             {
                 settings[NameKey(set, i)] = ReadString(settings, NameKey(set, i + 1));
                 settings[TagKey(set, i)] = ReadString(settings, TagKey(set, i + 1));
+                // 颜色也要跟着上移（否则删一行之后颜色会"串"到上一行）；i 递增遍历，
+                // 读 i+1 时它还没被覆盖，所以可以直接前移。
+                settings[ColorKey(set, i)] = ReadCustomGroupColorHex(settings, set, i + 1);
             }
             settings[NameKey(set, count - 1)] = "";
             settings[TagKey(set, count - 1)] = "";
+            settings[ColorKey(set, count - 1)] = DefaultGroupColorHex;   // 末行复位成默认（无颜色）
             SetCount(set, count - 1);
             ADOFAIEditorExtension.Settings.SettingsStore.Save();   // 行数跨重启持久化
 

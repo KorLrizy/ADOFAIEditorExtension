@@ -2,6 +2,7 @@ using ADOFAIEditorExtension.Features.DecoGrouping;
 using ADOFAIEditorExtension.PropertyCollection;
 using System;
 using System.Collections.Generic;
+using UnityEngine;
 
 namespace ADOFAIEditorExtension
 {
@@ -28,15 +29,18 @@ namespace ADOFAIEditorExtension
         public static string NameKey(int index) => DecoGroupState.NameKey(DecoGroupState.GroupSet.Decoration, index);
         public static string TagKey(int index) => DecoGroupState.TagKey(DecoGroupState.GroupSet.Decoration, index);
         public static string DeleteKey(int index) => DecoGroupState.DeleteKey(DecoGroupState.GroupSet.Decoration, index);
+        public static string ColorKey(int index) => DecoGroupState.ColorKey(DecoGroupState.GroupSet.Decoration, index);
 
         /// <summary>第 index 行的三个字段名（0 基）—— 事件那一套（§17.2）。</summary>
         internal static string EventNameKey(int index) => DecoGroupState.NameKey(DecoGroupState.GroupSet.Event, index);
         internal static string EventTagKey(int index) => DecoGroupState.TagKey(DecoGroupState.GroupSet.Event, index);
         internal static string EventDeleteKey(int index) => DecoGroupState.DeleteKey(DecoGroupState.GroupSet.Event, index);
+        internal static string EventColorKey(int index) => DecoGroupState.ColorKey(DecoGroupState.GroupSet.Event, index);
 
         /// <summary>第 index 行（0 基）的本地化键，带行号，由 <see cref="RegisterRowLocalizations"/> 生成。</summary>
         public static string NameLabelKey(int index) => "aee.group.name." + (index + 1);
         public static string TagLabelKey(int index) => "aee.group.tag." + (index + 1);
+        public static string ColorLabelKey(int index) => "aee.group.color." + (index + 1);
         public static string DeleteLabelKey(int index) => "aee.group.delete." + (index + 1);
 
         /// <summary>把带行号的本地化键预先写进本地化表（三种语言），供标签与按钮文本共用。</summary>
@@ -48,6 +52,7 @@ namespace ADOFAIEditorExtension
             {
                 localizations.AddDerived(NameLabelKey(i), "aee.group.name", i + 1);
                 localizations.AddDerived(TagLabelKey(i), "aee.group.tag", i + 1);
+                localizations.AddDerived(ColorLabelKey(i), "aee.group.color", i + 1);
                 localizations.AddDerived(DeleteLabelKey(i), "aee.group.delete", i + 1);
             }
         }
@@ -113,6 +118,14 @@ namespace ADOFAIEditorExtension
                     value_default: "",
                     key: TagLabelKey(index)
                 ));
+                // 组头颜色：原版颜色控件（点开就是原版取色器，含 RGBA）；默认纯白 + alpha 0 = 不着色。
+                // 只有**用户自定义分组**（custom:i）的组头会用到它，自动分组与「未分组」在渲染层被过滤掉（需求 3）。
+                properties.Add(new Property_Color(
+                    name: DecoGroupState.ColorKey(DecoGroupState.GroupSet.Decoration, index),
+                    value_default: DecoGroupState.DefaultGroupColor,
+                    usesAlpha: true,
+                    key: ColorLabelKey(index)
+                ));
                 properties.Add(new Property_Button(
                     name: DecoGroupState.DeleteKey(DecoGroupState.GroupSet.Decoration, index),
                     action: () => DecoGroupState.DeleteCustomGroup(DecoGroupState.GroupSet.Decoration, index),
@@ -136,6 +149,12 @@ namespace ADOFAIEditorExtension
                     value_default: "",
                     key: TagLabelKey(index)
                 ));
+                properties.Add(new Property_Color(
+                    name: EventColorKey(index),
+                    value_default: DecoGroupState.DefaultGroupColor,
+                    usesAlpha: true,
+                    key: ColorLabelKey(index)
+                ));
                 properties.Add(new Property_Button(
                     name: EventDeleteKey(index),
                     action: () => DecoGroupState.DeleteCustomGroup(DecoGroupState.GroupSet.Event, index),
@@ -155,6 +174,7 @@ namespace ADOFAIEditorExtension
             {
                 list.Add(DecoGroupState.NameKey(set, i));
                 list.Add(DecoGroupState.TagKey(set, i));
+                list.Add(DecoGroupState.ColorKey(set, i));
                 list.Add(DecoGroupState.DeleteKey(set, i));
             }
             return list;
@@ -169,6 +189,7 @@ namespace ADOFAIEditorExtension
             {
                 list.Add(DecoGroupState.NameKey(DecoGroupState.GroupSet.Decoration, i));
                 list.Add(DecoGroupState.TagKey(DecoGroupState.GroupSet.Decoration, i));
+                list.Add(DecoGroupState.ColorKey(DecoGroupState.GroupSet.Decoration, i));
                 list.Add(DecoGroupState.DeleteKey(DecoGroupState.GroupSet.Decoration, i));
             }
             return list;
@@ -195,6 +216,11 @@ namespace ADOFAIEditorExtension
                 templateKey = "aee.group.tag";
                 suffix = propertyName.Substring("eventGroupTag".Length);
             }
+            else if (propertyName.StartsWith("eventGroupColor", StringComparison.Ordinal))
+            {
+                templateKey = "aee.group.color";
+                suffix = propertyName.Substring("eventGroupColor".Length);
+            }
             else if (propertyName.StartsWith("eventDeleteGroup", StringComparison.Ordinal))
             {
                 templateKey = "aee.group.delete";
@@ -209,6 +235,11 @@ namespace ADOFAIEditorExtension
             {
                 templateKey = "aee.group.tag";
                 suffix = propertyName.Substring("groupTag".Length);
+            }
+            else if (propertyName.StartsWith("groupColor", StringComparison.Ordinal))
+            {
+                templateKey = "aee.group.color";
+                suffix = propertyName.Substring("groupColor".Length);
             }
             else if (propertyName.StartsWith("deleteGroup", StringComparison.Ordinal))
             {
