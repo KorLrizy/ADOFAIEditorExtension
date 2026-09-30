@@ -3086,6 +3086,119 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>
+        /// 弹窗开着时按撤销 / 重做快捷键（§45）：执行一次关卡撤销/重做，然后**不关窗**把弹窗按撤销后的
+        /// 数据重刷（事件顺序、分组归属、组头、选中高亮、右侧属性面板）。
+        ///
+        /// **为什么要自己做**：本弹窗是 `scnEditor.ShowPopup` 打开的（`showingPopup == true`），
+        /// 原版 `HandleKeyboardActions` 一见它就"只处理 Esc 然后 return"（r148 IL 已核，见
+        /// <see cref="PagerUndo"/>）⇒ 弹窗期间 Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z 全部停摆。
+        /// 键位判定、以及"我们处理掉按键的那一帧跳过原版方法体"沿用剪贴板那一套
+        /// （<see cref="PagerClipboard.HandleKeybinds"/> + `PagerKeybindPatch`），所以一次按键只撤一步。
+        ///
+        /// **撤销会换掉/删掉事件对象**（原版撤销把整份关卡数据换成快照副本；PACL2 的增量回滚按引用增删），
+        /// 所以进撤销之前按**对象**记下选中集、当前事件与它的下标，撤销之后按对象重映射回新下标
+        /// （纯逻辑见 <see cref="PagerUndo.RemapSelection"/>）：当前事件没了就停在原下标的邻居上
+        /// （越界夹到末尾）；这个类型在这块砖上不足 2 个事件（或选中的砖不再是单选）⇒ 回到"原版分页器
+        /// 本来就不显示"的状态，交给 <see cref="ReloadRows"/> 里的 `CanOpen` 关窗。
+        /// </summary>
+        internal static void UndoRedoInPopup(bool redo)
+        {
+            string what = redo ? "重做" : "撤销";
+            scnEditor editor = scnEditor.instance;
+            InspectorTab tab = openTab;
+            if (!Main.IsEnabled || editor == null || tab == null || !isOpen)
+                return;
+
+            // 文本输入框有焦点 ⇒ 不拦截（输入框里 Ctrl+Z 是文本撤销，原版也是这道门）
+            if (PagerUndo.SkipForInputField(editor))
+            {
+                Main.Logger?.Log("分页器直选：弹窗内" + what + "未拦截（文本输入框有焦点）");
+                return;
+            }
+
+            // 撤销前的快照：全是**对象**（下标撤销后会变，对象本身也可能被换掉）
+            List<LevelEvent> selectedBefore = SelectedPopupEvents();
+            LevelEvent currentBefore = currentEvent;
+            int indexBefore = currentStack != null && currentStack.Count > 0
+                ? Mathf.Clamp(tab.eventIndex, 0, currentStack.Count - 1)
+                : 0;
+            bool hadBatch = HasBatch();
+
+            // 撤销 / 重做本身：原版入口优先，PACL2 生效时若发现这次调用被它的接管绕过了，
+            // 由 Pacl2Compat 补调 PACL2 自己的入口（见 Utils\Pacl2Compat.LevelUndoRedo）
+            Pacl2Compat.LevelUndoRedo(editor, redo);
+
+            // 批量态：撤销按引用增删（PACL2）或整份换掉（原版）⇒ 先按引用剔除已经不在关卡里的事件
+            // （不足 2 个就退出多选，与原版撤销后"批量失效 ⇒ 退出"的旧行为一致）
+            if (hadBatch)
+                VerifyBatchEventsAlive();
+
+            // 重新取这一堆事件，并按对象重映射选中集与当前事件
+            List<LevelEvent> stack = null;
+            try { stack = editor.GetSelectedFloorEvents(tab.levelEventType); }
+            catch (Exception e) { Main.Logger?.Log("弹窗内" + what + "后取事件列表失败: " + e.Message); }
+
+            if (!isOpen)
+            {
+                // 撤销途中的面板切换/选砖（原版 UndoOrRedo 的 ShowPanel / SelectFloor）已经按原规则把弹窗关掉了
+                LogUndoRedo(redo, stack != null ? stack.Count : 0, 0);
+                return;
+            }
+
+            if (stack == null || stack.Count <= 1)
+            {
+                LogUndoRedo(redo, stack != null ? stack.Count : 0, 0);
+                Close();       // 该类型在这块砖上不足 2 个事件：原版分页器/本弹窗本来就不该开着
+                return;
+            }
+
+            selectedIndices.Clear();
+            selectionAnchor = -1;
+            PagerUndo.RemapSelection(stack, selectedBefore, currentBefore, indexBefore, selectedIndices, out int currentIndex);
+            if (currentIndex < 0 || currentIndex >= stack.Count)
+                currentIndex = 0;
+            currentEvent = stack[currentIndex];
+            tab.eventIndex = currentIndex;
+
+            // 顺序 / 分组归属 / 组头 / 选中高亮 / 列表高度全部按新数据重建（它内部会再判一次 CanOpen）
+            ReloadRows();
+            if (!isOpen)
+            {
+                LogUndoRedo(redo, stack.Count, 0);   // CanOpen 判false（换砖/换类型/砖不再单选）⇒ 已经关窗了
+                return;
+            }
+
+            if (HasBatch())
+            {
+                // 批量态还活着（PACL2 的增量回滚不会换掉对象）：按新数据重建 fake 并挂回面板
+                ApplySelectionToPanel(false);
+            }
+            else
+            {
+                // 右侧属性面板：原版与 PACL2 的撤销实现自己都会 ShowPanel（IL 已核），但那用的是撤销快照里的
+                // 类型/下标；这里对齐到我们重映射后的当前事件（同一类型 ⇒ 不会触发关窗，先压住保险）
+                SuppressAutoClose();
+                try { tab.panel?.ShowPanel(tab.levelEventType, currentIndex); }
+                catch (Exception e) { Main.Logger?.Log("弹窗内" + what + "后刷新属性面板失败: " + e.Message); }
+            }
+
+            // 装饰栏（分组列表）：原版撤销走 UpdateDecorationObjects → 每个装饰 CallDecorationUpdate
+            // → `PropertyControl_DecorationsList.OnDecorationUpdate` 置 applyOnDecorationUpdate，
+            // 下一帧 `LateUpdate` → ApplyOnDecorationUpdate → FilterSearchResults（我们的分组 Build 挂在这）
+            // ⇒ **原版自己会刷**；这里同帧再刷一次，免得撤销后这一帧里装饰栏还显示旧分组/旧成员。
+            DecoGroupRenderer.RefreshList();
+
+            LogUndoRedo(redo, stack.Count, LiveSelectionCount());
+        }
+
+        /// <summary>弹窗内撤销/重做各记一行（§45）：事件个数 = 撤销后这块砖该类型的事件数，选中 = 当前真实选中数。</summary>
+        private static void LogUndoRedo(bool redo, int events, int selected)
+        {
+            Main.Logger?.Log(string.Format("分页器直选：弹窗内{0} → 事件 {1} 个，选中 {2} 个",
+                redo ? "重做" : "撤销", events, selected));
+        }
+
+        /// <summary>
         /// `LevelEvent.set_Item` 的兜底入口（§32.2）：只有写的是我们的 fake 时才动。
         /// 覆盖绕过 `PropertyControl.OnValueChange` 的写值路径（OGG 编码回调、文件处理回调等），
         /// 以及"一次改多个键"的控件；幂等检查保证不会重复写/多开撤销点。

@@ -492,6 +492,111 @@ namespace ADOFAIEditorExtension.Utils
             }
         }
 
+        // ================================================================== 撤销 / 重做入口（弹窗内快捷键，§45）
+
+        /// <summary>
+        /// 执行一次关卡撤销 / 重做，保证"PACL2 开关两种情况下都真的执行了一次，且只执行一次"。
+        ///
+        /// **原版入口在哪（r148 IL 已核）**：`ADOFAI.Editor.Actions.UndoEditorAction.Execute(scnEditor)` 就是
+        /// `call scnEditor::Undo()`（Redo 同理 `call scnEditor::Redo()`），而 `scnEditor.Undo()`/`Redo()` 的
+        /// 方法体只有一句 `call scnEditor::UndoOrRedo(false/true)`。
+        ///
+        /// **为什么不能直接反射调 PACL2 的 `SaveStatePatch.UndoOrRedo(bool)`**：那会绕过 PACL2 自己挂在
+        /// 原版 `scnEditor.UndoOrRedo` 上的 Harmony 前后缀
+        /// （`PACL2.Features.BetterUndoRedo.BetterUndoRedoPatches.ScnEditorUndoOrRedoPrefix/Postfix`：
+        /// 置/清 `TimelineUtil.SaveStateScopeIsUndoState`、撤销后刷新时间轴预览）——那是原版快捷键路径上的东西，
+        /// 我们没理由替用户跳过它。
+        ///
+        /// **为什么也不能只调原版入口**：PACL2 的接管是 JAPatch 的"按调用点替换 IL"，而它只扫自己初始化时
+        /// 已经加载的程序集；我们的模组在 PACL2 之后加载 ⇒ 我们方法体里的调用点没被改写。
+        /// 如果它换的是 `scnEditor.UndoOrRedo` 的调用点，原版 `scnEditor.undoStates` 在 BetterUndoRedo 下
+        /// 又是空的（压栈全走 `SaveStatePatch.SaveState`）⇒ 这一次调用**谁也不会执行**（静默无效果）。
+        ///
+        /// 所以：先调原版入口，再按"**两个撤销栈有没有真的少一个**"判断这次到底执行了没有
+        /// （PACL2 的 `UndoOrRedo` 回滚成功时必然把栈顶状态从一个栈挪到另一个栈，IL 已核：
+        /// `stack.RemoveAt(count-1)` 之后 `另一栈.Add(state)`）：
+        ///   · PACL2 的 `undoStates`/`redoStates` 少了 ⇒ PACL2 执行了（连带它的前后缀），收工；
+        ///   · 原版 `scnEditor.undoStates`/`redoStates` 少了 ⇒ 原版执行了，收工；
+        ///   · 都没动、而 PACL2 接管着并且它栈里确实有东西可回滚 ⇒ 这次调用被绕过了，
+        ///     反射调 `SaveStatePatch.UndoOrRedo(bool)` 补一次（我们挂在它上面的顺序前后缀随之执行，§44.6）。
+        /// 两个栈各自只看"同一方向"的那个（撤销看 undoStates），所以回滚成功必然表现为 −1，不会误判成"没执行"
+        /// 而重复回滚一次。
+        /// </summary>
+        internal static void LevelUndoRedo(scnEditor editor, bool redo)
+        {
+            if (editor == null)
+                return;
+            int pacl2Before = Pacl2StackCount(redo);
+            int vanillaBefore = VanillaStackCount(editor, redo);
+            try
+            {
+                if (redo)
+                    editor.Redo();
+                else
+                    editor.Undo();
+            }
+            catch (Exception e)
+            {
+                // 已经抛了：可能回滚到一半，绝不补第二次（宁可这次没生效，也不能撤两步）
+                Main.Logger?.Log("弹窗内" + (redo ? "重做" : "撤销") + "失败（不再重试）: " + e);
+                return;
+            }
+            if (StackShrank(pacl2Before, Pacl2StackCount(redo)))
+                return;                                        // PACL2 执行了
+            if (StackShrank(vanillaBefore, VanillaStackCount(editor, redo)))
+                return;                                        // 原版执行了
+            if (pacl2Before <= 0)
+                return;                                        // PACL2 没接管 / 它也没东西可回滚：就此为止
+            // 把我们自己的顺序前后缀挂上（§44.6；已挂过就是一次引用比较）。挂不上也照旧往下走：
+            // 没有顺序记录时前后缀本来就是空转，撤销本身不能因此不做。
+            EnsureUndoHook();
+            try
+            {
+                orderState.UndoOrRedoMethod.Invoke(null, new object[] { redo });
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("反射调用 PACL2 UndoOrRedo 失败: " + e);
+            }
+        }
+
+        /// <summary>这个方向的可回滚状态数（-1 = 读不到 / PACL2 没接管）。</summary>
+        private static int Pacl2StackCount(bool redo)
+        {
+            if (!IsBetterUndoRedoActive() || !EnsureOrderStateSlot())
+                return -1;
+            try
+            {
+                System.Collections.IList stack = (redo ? orderState.RedoStatesField : orderState.UndoStatesField).GetValue(null)
+                    as System.Collections.IList;
+                return stack != null ? stack.Count : -1;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        /// <summary>原版 `scnEditor.undoStates` / `redoStates`（public 字段，IL 核过）里的状态数；读不到返回 -1。</summary>
+        private static int VanillaStackCount(scnEditor editor, bool redo)
+        {
+            try
+            {
+                System.Collections.IList stack = editor.Get<object>(redo ? "redoStates" : "undoStates") as System.Collections.IList;
+                return stack != null ? stack.Count : -1;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        /// <summary>撤销/重做一次之后这个栈该有的变化：少了一个（不许用 `!=`：中途别的模组动过栈就不能瞎判）。</summary>
+        private static bool StackShrank(int before, int after)
+        {
+            return before >= 0 && after >= 0 && after < before;
+        }
+
         // ================================================================== 分页器：事件重排的撤销（§44.6）
 
         /// <summary>

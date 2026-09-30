@@ -109,6 +109,7 @@
     <Compile Include="Features\PagerList\PagerClipboard.cs" />
     <Compile Include="Features\PagerList\PagerListController.cs" />
     <Compile Include="Features\PagerList\PagerListPatches.cs" />
+    <Compile Include="Features\PagerList\PagerUndo.cs" />
     <Compile Include="Localization.cs" />
     <Compile Include="Main.cs" />
     <Compile Include="Patches\EditorIntegrationPatches.cs" />
