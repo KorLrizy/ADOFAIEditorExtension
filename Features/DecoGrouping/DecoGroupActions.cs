@@ -232,6 +232,304 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             return true;
         }
 
+        // ---------------------------------------------------------------- 多选整批拖动（§44）
+
+        /// <summary>
+        /// 这次拖动要搬哪些装饰（规则同原版 `PropertyControl_DecorationsList.CacheOnStartDrag`，r265 IL 已核）：
+        /// 被拖的那一行**在**当前多选集合里、且集合 ≥ 2 ⇒ 整个选中集合；否则只有被拖的那一个。
+        /// 结果按装饰数组顺序（= 显示与绘制顺序）排好；已不在关卡里的僵尸项剔除。
+        /// </summary>
+        internal static List<LevelEvent> CollectDraggingSet(LevelEvent dragged)
+        {
+            var result = new List<LevelEvent>();
+            if (dragged == null)
+                return result;
+
+            scnEditor editor = scnEditor.instance;
+            List<LevelEvent> selected = editor != null ? editor.selectedDecorations : null;
+            List<LevelEvent> order = editor != null && editor.levelData != null ? editor.levelData.decorations : null;
+            if (selected != null && order != null && selected.Count >= 2 && selected.Contains(dragged))
+            {
+                var set = new HashSet<LevelEvent>(selected);
+                for (int i = 0; i < order.Count; i++)
+                    if (order[i] != null && set.Contains(order[i]))
+                        result.Add(order[i]);
+            }
+            if (result.Count < 2 || !result.Contains(dragged))
+            {
+                result.Clear();
+                result.Add(dragged);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// 整批落点是否有效（拖动反馈与 <see cref="DropDecorations"/> 共用一套口径）：
+        /// **每一个**装饰都要么能按该键解析出归属、要么本来就在该组里；有一个做不到就整批无效
+        /// （典型：跨类型多选拖到某个 `type:*` 组，见 §22.2）。
+        /// </summary>
+        internal static bool IsBatchDropAcceptable(IList<LevelEvent> dragging, string groupKey)
+        {
+            if (dragging == null || dragging.Count == 0 || string.IsNullOrEmpty(groupKey))
+                return false;
+            for (int i = 0; i < dragging.Count; i++)
+            {
+                LevelEvent e = dragging[i];
+                if (e == null)
+                    return false;
+                if (!TryResolveAssignment(groupKey, DecoGroupState.GroupSet.Decoration, e, out _) && !IsInGroup(e, groupKey))
+                    return false;
+            }
+            return true;
+        }
+
+        /// <summary>整批里有没有需要改归属的（落点落在被拖集合内部时，只有这种情况才值得给反馈）。</summary>
+        internal static bool BatchNeedsReassign(IList<LevelEvent> dragging, string groupKey)
+        {
+            if (dragging == null || string.IsNullOrEmpty(groupKey))
+                return false;
+            for (int i = 0; i < dragging.Count; i++)
+            {
+                LevelEvent e = dragging[i];
+                if (e != null && TryResolveAssignment(groupKey, DecoGroupState.GroupSet.Decoration, e, out GroupAssignment a) && NeedsChange(e, a))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 多选整批拖动落点（单个时等价于 <see cref="DropDecoration"/>）。规则：
+        ///  · 归属：逐个解析，只改真正需要改的；任何一个装饰对该组无效 ⇒ 整批放弃（<see cref="IsBatchDropAcceptable"/>）。
+        ///  · 排序：保持被拖装饰原有的相对顺序，整块插到落点；落点就在被拖集合内部 ⇒ 不排序、只改归属
+        ///    （与原版 `OnItemDropSides` 一致）；落在组头 ⇒ 插到该组（不算被拖的）最后一个成员之后。
+        ///  · 撤销：一个 SaveStateScope 覆盖"排序 + 归属"，与单个版本一致（v2 没有 PACL2，不存在
+        ///    "撤销栈被接管、整块放回还原不出原排布"的问题，所以纯同组重排也照做）。
+        /// </summary>
+        internal static bool DropDecorations(IList<LevelEvent> dragging, string groupKey, LevelEvent anchor, bool insertBefore)
+        {
+            if (dragging == null || dragging.Count == 0 || string.IsNullOrEmpty(groupKey))
+                return false;
+            if (dragging.Count == 1)
+                return DropDecoration(dragging[0], groupKey, anchor, insertBefore);
+
+            scnEditor editor = scnEditor.instance;
+            DecorationsArray<LevelEvent> order = editor != null && editor.levelData != null ? editor.levelData.decorations : null;
+            if (order == null)
+                return false;
+
+            // 被拖集合：只留还在关卡里的，按数组顺序（拖动开始到松手之间关卡可能变了）
+            var draggingSet = new HashSet<LevelEvent>(dragging);
+            var moving = new List<LevelEvent>(dragging.Count);
+            for (int i = 0; i < order.Count; i++)
+                if (order[i] != null && draggingSet.Contains(order[i]))
+                    moving.Add(order[i]);
+            if (moving.Count == 0)
+                return false;
+            if (moving.Count == 1)
+                return DropDecoration(moving[0], groupKey, anchor, insertBefore);
+            var movingSet = new HashSet<LevelEvent>(moving);
+
+            if (!IsBatchDropAcceptable(moving, groupKey))
+            {
+                Main.Logger?.Log(string.Format("装饰整批拖动：{0} 个，目标={1} 对其中部分装饰无效，整批放弃", moving.Count, groupKey));
+                return false;
+            }
+
+            var toAssign = new List<(LevelEvent Event, GroupAssignment Assignment)>();
+            for (int i = 0; i < moving.Count; i++)
+            {
+                LevelEvent e = moving[i];
+                if (TryResolveAssignment(groupKey, DecoGroupState.GroupSet.Decoration, e, out GroupAssignment a) && NeedsChange(e, a))
+                    toAssign.Add((e, a));
+            }
+
+            // 落点 → 插入锚点（被拖的装饰一律不能当锚点）
+            bool anchorInside = anchor != null && movingSet.Contains(anchor);
+            LevelEvent insertAnchor = anchor;
+            if (!anchorInside && insertAnchor == null)
+            {
+                LevelEvent last = DecoGroupState.LastEventOfGroup(groupKey, movingSet);
+                if (last != null)
+                {
+                    insertAnchor = last;
+                    insertBefore = false;
+                }
+                else
+                {
+                    insertAnchor = DecoGroupState.NextEventAfterGroup(groupKey, movingSet);   // null ⇒ 追加到末尾
+                    insertBefore = true;
+                }
+            }
+
+            List<LevelEvent> planned = null;
+            bool willMove = !anchorInside && TryPlanBatchMove(order, moving, insertAnchor, insertBefore, out planned);
+
+            Main.Logger?.Log(string.Format(
+                "装饰整批拖动：{0} 个，目标={1}，锚点={2}，改归属={3} 个，排序={4}",
+                moving.Count, groupKey,
+                anchorInside ? "被拖集合内部" : insertAnchor == null ? "末尾" : (insertBefore ? "锚点前" : "锚点后"),
+                toAssign.Count, willMove ? "是" : "否"));
+
+            if (toAssign.Count == 0 && !willMove)
+                return false;
+
+            bool moved = false;
+            try
+            {
+                using (new SaveStateScope(editor, false, true, false))
+                {
+                    moved = willMove && MoveBatchInDecorations(editor, order, moving, planned);
+                    for (int i = 0; i < toAssign.Count; i++)
+                        ApplyAssignment(toAssign[i].Event, toAssign[i].Assignment);
+                    if (toAssign.Count > 0 || moved)
+                        for (int i = 0; i < moving.Count; i++)
+                            editor.UpdateDecorationObject(moving[i]);
+                }
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("整批拖动归组/排序失败: " + e.Message);
+                return false;
+            }
+
+            if (toAssign.Count == 0 && !moved)
+                return false;
+            if (moved)
+                SyncDecorationOrder(editor);
+            DecoGroupRenderer.RefreshList();
+            return true;
+        }
+
+        /// <summary>被拖的装饰在数组里是否本来就是连续的一块（<paramref name="moving"/> 已按数组顺序）。</summary>
+        private static bool IsContiguous(List<LevelEvent> order, List<LevelEvent> moving)
+        {
+            int first = order.IndexOf(moving[0]);
+            if (first < 0 || first + moving.Count > order.Count)
+                return false;
+            for (int i = 1; i < moving.Count; i++)
+                if (!ReferenceEquals(order[first + i], moving[i]))
+                    return false;
+            return true;
+        }
+
+        /// <summary>
+        /// 纯逻辑（便于离线验证）：把 <paramref name="moving"/>（已按数组顺序）从 <paramref name="order"/> 里拿出来，
+        /// 整块插到 anchor 之前/之后（anchor == null ⇒ 追加到末尾），得到新顺序。
+        /// 返回 false = 顺序不会变 / 锚点不合法（是被拖的装饰之一、或已不在数组里）。
+        /// </summary>
+        internal static bool TryPlanBatchMove(List<LevelEvent> order, List<LevelEvent> moving, LevelEvent anchor, bool insertBefore,
+            out List<LevelEvent> planned)
+        {
+            planned = null;
+            if (order == null || moving == null || moving.Count == 0)
+                return false;
+            var movingSet = new HashSet<LevelEvent>(moving);
+            if (anchor != null && movingSet.Contains(anchor))
+                return false;
+
+            var rest = new List<LevelEvent>(order.Count);
+            for (int i = 0; i < order.Count; i++)
+                if (!movingSet.Contains(order[i]))
+                    rest.Add(order[i]);
+            if (rest.Count + moving.Count != order.Count)
+                return false;   // moving 里有不在数组里的（或重复的）：不动
+
+            int at;
+            if (anchor == null)
+                at = rest.Count;
+            else
+            {
+                int anchorIndex = rest.IndexOf(anchor);
+                if (anchorIndex < 0)
+                    return false;
+                at = insertBefore ? anchorIndex : anchorIndex + 1;
+            }
+            rest.InsertRange(at, moving);
+
+            for (int i = 0; i < order.Count; i++)
+            {
+                if (!ReferenceEquals(order[i], rest[i]))
+                {
+                    planned = rest;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 按 <see cref="TryPlanBatchMove"/> 的结果落地：`levelData.decorations` 与 `allDecorations`
+        /// 在同一下标上一起整块移除 / 插入（约定同 <see cref="MoveInDecorations"/>）。
+        /// 只有最后一次插入走 `DecorationsArray.Insert`（它会回调 OnDecorationUpdate 刷新列表），
+        /// 其余走 `List.Insert`，保证回调时两边数组都已经是最终状态、且只回调一次。
+        /// </summary>
+        private static bool MoveBatchInDecorations(scnEditor editor, DecorationsArray<LevelEvent> decorations,
+            List<LevelEvent> moving, List<LevelEvent> planned)
+        {
+            if (decorations == null || moving == null || planned == null || moving.Count == 0)
+                return false;
+            int at = planned.IndexOf(moving[0]);
+            if (at < 0)
+                return false;
+
+            // 场景侧装饰对象：全都找得到才一起动，否则只重排关卡数据（与单个版本的退路一致）
+            List<scrDecoration> all = null;
+            var decos = new List<scrDecoration>(moving.Count);
+            try
+            {
+                all = scrDecorationManager.instance != null ? scrDecorationManager.instance.allDecorations : null;
+                if (all != null)
+                {
+                    for (int i = 0; i < moving.Count; i++)
+                    {
+                        scrDecoration d = scrDecorationManager.GetDecoration(moving[i]);
+                        if (d == null || !all.Contains(d))
+                        {
+                            all = null;
+                            break;
+                        }
+                        decos.Add(d);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("读取装饰对象列表失败，只重排关卡数据: " + e.Message);
+                all = null;
+            }
+            if (all == null)
+                Main.Logger?.Log("整批拖动：部分装饰找不到场景对象，只重排关卡数据");
+
+            List<LevelEvent> baseList = decorations;   // List.Remove / List.Insert：不触发 DecorationsArray 的回调
+            for (int i = 0; i < moving.Count; i++)
+            {
+                baseList.Remove(moving[i]);
+                if (all != null)
+                    all.Remove(decos[i]);
+            }
+
+            int n = moving.Count;
+            if (all != null)
+                for (int i = 0; i < n; i++)
+                    all.Insert(Mathf.Clamp(at + i, 0, all.Count), decos[i]);   // 先插场景列表：回调刷新时两边已一致
+            for (int i = 0; i < n - 1; i++)
+                baseList.Insert(Mathf.Clamp(at + i, 0, baseList.Count), moving[i]);
+
+            LevelEvent lastEvent = moving[n - 1];
+            int lastIndex = Mathf.Clamp(at + n - 1, 0, baseList.Count);
+            try
+            {
+                decorations.Insert(lastIndex, lastEvent);
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("装饰数组 Insert 失败（整批最后一项）: " + e.Message);
+                if (!baseList.Contains(lastEvent))
+                    baseList.Insert(Mathf.Clamp(lastIndex, 0, baseList.Count), lastEvent);
+            }
+            return true;
+        }
+
         /// <summary>
         /// 这个键的语义是否**可能与事件有关**（"未分组 / 自定义分组 / 标签分组"都是）。
         /// `type:*` 从这里看是否定的，但"自己的类型组"经

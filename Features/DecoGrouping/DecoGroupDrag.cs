@@ -1,4 +1,5 @@
 using ADOFAI;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 
@@ -20,10 +21,16 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
     internal sealed class DecoRowDragTarget : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler
     {
         private LevelEvent dragging;
+        /// <summary>
+        /// 这次要搬的全部装饰（拖动开始时定下，规则同原版 CacheOnStartDrag：被拖行在多选集合里 ⇒ 整批，
+        /// 否则只有它自己，见 §44）。按装饰数组顺序，至少包含 <see cref="dragging"/>。
+        /// </summary>
+        private List<LevelEvent> draggingSet;
 
         public void OnBeginDrag(PointerEventData eventData)
         {
             dragging = null;
+            draggingSet = null;
             // 模组已在 UMM 里关掉（补丁已卸、编辑器没能重启）：组件还挂在池化的行上，但不能再接管
             if (!Main.IsEnabled || !Main.IsDecoGroupingEnabled)
                 return;   // 分组关闭：交给原版的排序拖拽
@@ -34,7 +41,10 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
             eventData?.Use();
             dragging = item.sourceLevelEvent;
-            DecoGroupRenderer.UpdateDropFeedback(eventData != null ? eventData.position : Vector2.zero, dragging);
+            draggingSet = DecoGroupActions.CollectDraggingSet(dragging);
+            if (draggingSet.Count >= 2)
+                Main.Logger?.Log(string.Format("装饰拖动开始：多选整批 {0} 个", draggingSet.Count));
+            DecoGroupRenderer.UpdateDropFeedback(eventData != null ? eventData.position : Vector2.zero, dragging, draggingSet);
         }
 
         public void OnDrag(PointerEventData eventData)
@@ -45,11 +55,12 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             {
                 // 拖到一半模组被关掉：放弃这次拖动
                 dragging = null;
+                draggingSet = null;
                 DecoGroupRenderer.ClearDropFeedback();
                 return;
             }
             eventData?.Use();
-            DecoGroupRenderer.UpdateDropFeedback(eventData != null ? eventData.position : Vector2.zero, dragging);
+            DecoGroupRenderer.UpdateDropFeedback(eventData != null ? eventData.position : Vector2.zero, dragging, draggingSet);
         }
 
         public void OnEndDrag(PointerEventData eventData)
@@ -60,13 +71,16 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             if (!Main.IsEnabled)
             {
                 dragging = null;
+                draggingSet = null;
                 DecoGroupRenderer.ClearDropFeedback();
                 return;
             }
             eventData?.Use();
 
             LevelEvent ev = dragging;
+            List<LevelEvent> set = draggingSet;
             dragging = null;
+            draggingSet = null;
             Vector2 position = eventData != null ? eventData.position : Vector2.zero;
 
             // 落点：以松手时的指针位置为准（最后一帧的反馈也是按它显示的）
@@ -75,7 +89,10 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
 
             if (ev == null || !hasTarget || string.IsNullOrEmpty(target.Key))
                 return;   // 松手时不在任何组上：什么都不做
-            DecoGroupActions.DropDecoration(ev, target.Key, target.Anchor, target.Before);
+            if (set != null && set.Count >= 2)
+                DecoGroupActions.DropDecorations(set, target.Key, target.Anchor, target.Before);
+            else
+                DecoGroupActions.DropDecoration(ev, target.Key, target.Anchor, target.Before);
         }
 
         /// <summary>行被回收/面板重建（拖到一半行没了）：清干净，别把状态带到下一次拖动。</summary>
@@ -84,6 +101,7 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             if (dragging == null)
                 return;
             dragging = null;
+            draggingSet = null;
             DecoGroupRenderer.ClearDropFeedback();
         }
     }
