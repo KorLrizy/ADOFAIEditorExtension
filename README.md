@@ -14,9 +14,14 @@
   不分组 → 按类型 → 按标签 → 自定义（设置页里保留同样的开关作为默认值）。
 - **自定义分组**：在设置页里命名分组、绑定 `tag`，也可以**把装饰行直接拖到某个组上**完成归组，
   组内与跨组的拖动排序同样有效。
+- **多选整批拖动**：在多选状态下拖动其中一行（`ctrl` 逐个加选 / `shift` 区间选择），
+  整批选中项会**保持相对顺序**一起插到落点；落在组头上插到组尾，跟随方块旁显示 `×N`。
 - **组头操作**：组头行分成四块 `[箭头] [组名(数量)] [眼睛] [锁]` ——
   箭头折叠/展开；组名全选该组并在右侧打开原版多选属性面板（改一个属性 = 应用到组内全部装饰）；
   眼睛/锁整组切换可见与锁定（与原版逐行按钮同一套 API，不另造状态）。
+- **组头颜色**：设置页每个自定义分组行都带一个原版 RGBA 颜色控件（默认透明 = 不着色），
+  组头底色随之着色，组名 / 数量 / 三角箭头 / 眼睛 / 锁按底色自动取对比色（亮底黑字、暗底原色）；
+  颜色与分组一起存进 `Settings.json`，装饰与事件两套分组各自独立。
 - **可选写入关卡**：手动归属可以只活在本次会话里，也可以写进关卡文件（键名 `aeeGroupDeco`），
   默认不写入，见[注意事项](#注意事项与关卡兼容性)。
 
@@ -37,6 +42,10 @@
 - **弹窗内复制 / 剪切 / 粘贴**：`ctrl-shift-c/x`、`ctrl-alt-c/x`、`ctrl-shift-v` 按原版语义操作事件
   （单选 = 当前事件，多选 = 全部选中事件），并在左上角提示"已复制 N / 已剪切 N / 已粘贴 N"。
   原版在弹窗期间会停掉所有快捷键，这几条由本模组接手。
+- **弹窗内撤销 / 重做**：弹窗开着时 `ctrl-z` 撤销、`ctrl-shift-z` 重做，一次按键只走一步
+  （文本输入框有焦点时不拦截，保留文本框自己的撤销）。撤销后的选中集与当前事件按内容重新对应，
+  列表、右侧属性面板与装饰栏一起刷新。
+  注意：v2.9.8 线**不含** PACL2 BetterUndoRedo 兼容（只在 v3.3.1 版本中提供）。
 - **事件备注**：见下节，备注显示在事件行的右侧（超长截断），悬停看完整内容。
 
 ### 事件备注
@@ -66,7 +75,8 @@
 
 **方式一：Release 压缩包（推荐）**
 
-1. 从本仓库的 **Releases** 页面下载 `ADOFAIEditorExtension.zip`
+1. 从本仓库的 **Releases** 页面下载 `ADOFAIEditorExtension_v1.2.0_game-v2.9.8.zip`
+   （同一个 Release 下的 `..._game-v3.3.1.zip` 是给游戏 v3.3.1 的包，**不要下错**）
 2. 打开游戏里的 Unity Mod Manager → **Mod** → **Install mod** → 选择该 zip
 3. 启动游戏，在 UMM 的 Mod 列表可见 "ADOFAI Editor Extension"，勾选启用
 
@@ -133,7 +143,8 @@ ADOFAI Editor extension\
 ├── EnumCollection\
 │   ├── AutoGroupMode.cs           自动分组方式枚举
 │   └── GroupEditTarget.cs         设置页"编辑目标"两态枚举（装饰分组 / 事件分组）
-├── PropertyCollection\            面板字段类型（Property 基类 + Bool/Enum/InputField/Button）
+├── PropertyCollection\            面板字段类型（Property 基类 + Bool/Enum/InputField/Button/Color）
+├── Settings\SettingsStore.cs       模组设置持久化（mod 目录下的 Settings.json）
 ├── Utils\                         Reflections（私有成员访问）、LevelEventEX（UpdatePanel）、Popup
 ├── Patches\
 │   ├── EditorIntegrationPatches.cs   GCS 注入 / ShowPanel 接管 / 本地化与枚举键改写
@@ -150,10 +161,11 @@ ADOFAI Editor extension\
 ├── Features\PagerList\
 │   ├── PagerListController.cs     分页器点击入口 + 直选列表弹窗（分组/折叠/拖拽排序/多选/批量写回/备注列）
 │   ├── PagerClipboard.cs          弹窗内的复制/剪切/粘贴事件（复用原版剪贴板格式与快捷键表）
+│   ├── PagerUndo.cs               弹窗内撤销 / 重做（原版 SaveStateScope 路径）
 │   └── PagerListPatches.cs        Harmony 补丁集（InspectorTab.Init / 选区与面板切换时关闭 / 弹窗快捷键）
 ├── Features\Notes\
 │   └── EventNote.cs               事件备注（aeeNote 属性注册 + 空备注不落盘的 Encode 后置补丁）
-├── Properties\AssemblyInfo.cs     程序集信息与版本（1.1.0.0）
+├── Properties\AssemblyInfo.cs     程序集信息与版本（1.2.0.0）
 ├── LICENSE                        MIT
 └── README.md
 ```
