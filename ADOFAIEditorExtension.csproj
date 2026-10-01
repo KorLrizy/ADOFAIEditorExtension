@@ -109,6 +109,9 @@
     <Compile Include="Features\PagerList\PagerClipboard.cs" />
     <Compile Include="Features\PagerList\PagerListController.cs" />
     <Compile Include="Features\PagerList\PagerListPatches.cs" />
+    <Compile Include="Features\PagerList\PagerWindowGeometry.cs" />
+    <Compile Include="Features\PagerList\PagerNativeResizeFeedback.cs" />
+    <Compile Include="Features\PagerList\PagerWindowInteraction.cs" />
     <Compile Include="Features\PagerList\PagerUndo.cs" />
     <Compile Include="Localization.cs" />
     <Compile Include="Main.cs" />
@@ -123,7 +126,8 @@
     <Compile Include="PropertyCollection\Property_Color.cs" />
     <Compile Include="PropertyCollection\Property_Enum.cs" />
     <Compile Include="PropertyCollection\Property_InputField.cs" />
-    <Compile Include="Settings\SettingsStore.cs" />
+    <Compile Include="Settings\PagerWindowPreferences.cs" />
+ <Compile Include="Settings\SettingsStore.cs" />
     <Compile Include="Startup.cs" />
     <Compile Include="Utils\LevelEventEX.cs" />
     <Compile Include="Utils\Popup.cs" />
