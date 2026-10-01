@@ -42,6 +42,14 @@ namespace ADOFAIEditorExtension
         internal const string KeyPagerListEnabled = "pagerListEnabled";
         internal const string KeyEventGroupEditing = "eventGroupEditing";   // 面板正在编辑哪一套自定义分组（GroupEditTarget：Decoration / Event）
         internal const string KeyWriteGroupConfig = "writeGroupConfig";     // 是否把分组归属写进关卡文件（默认关）
+        internal const string KeyPagerAutoWindowSize = "pagerAutoWindowSize";   // 直选弹窗是否随内容自动调节尺寸（默认开）
+        internal const string KeyPagerWindowScale = "pagerWindowScale";         // 自动尺寸下的窗口放大倍率（0.5..2.5，默认 1.0）
+        internal const string KeyPagerWindowSnap = "pagerWindowSnap";           // 拖动标题移动窗口时是否吸附到屏幕四边/四角（默认关，两种模式都有效）
+
+        /// <summary>窗口放大倍率的合法区间（与 Features.PagerList.PagerWindowGeometry 的 MinScale/MaxScale 同值）。</summary>
+        internal const float PagerWindowScaleMin = 0.5f;
+
+        internal const float PagerWindowScaleMax = 2.5f;
 
         /// <summary>标签页的 LevelEvent（字段值都存这里）。</summary>
         internal static LevelEvent AeeLevelEvent { get; set; }
@@ -397,6 +405,71 @@ namespace ADOFAIEditorExtension
         /// <summary>分页器直选列表开关（缺省 true）。</summary>
         internal static bool IsPagerListEnabled => GetBoolSetting(KeyPagerListEnabled, true);
 
+        /// <summary>
+        /// 直选弹窗是否"自动调节窗口"（缺省 **true**）：开 = 弹窗按事件行数自己算宽高；
+        /// 关 = 用用户手调过的尺寸（见 <see cref="Settings.PagerWindowPreferences"/>）。
+        /// 同时也是面板上「窗口放大倍率」那一行的启用条件（原版 enableIf 机制，见 PrefabProperties）。
+        /// </summary>
+        internal static bool PagerAutoWindowSize => GetBoolSetting(KeyPagerAutoWindowSize, true);
+
+        /// <summary>
+        /// 用鼠标拖动标题区域移动窗口时，是否吸附到屏幕的四边/四角（缺省 **false**）。
+        /// **两种模式都有效**：拖动标题只改位置、不改尺寸，自动尺寸开着时也照样能拖，所以吸附同样生效
+        /// （自动尺寸只锁"拖边缘缩放"，见 <see cref="PagerAutoWindowSize"/> 那一行）。
+        /// 吸附本身不改变窗口大小，见 Features.PagerList.PagerWindowGeometry.Move。
+        /// </summary>
+        internal static bool PagerWindowSnap => GetBoolSetting(KeyPagerWindowSnap, false);
+
+        /// <summary>
+        /// 自动尺寸下的窗口放大倍率（缺省 1.0）。读取时做完整兜底：非有限数（NaN/±Infinity）、
+        /// 类型不对、字段缺失一律回落到 1.0，有限但越界的值夹到 [0.5, 2.5]。
+        /// 倍率改变的是**弹窗的宽高**（给列表和文本更多空间），不是字号 —— 面板上的说明也这么写。
+        /// </summary>
+        internal static float PagerWindowScale
+        {
+            get
+            {
+                LevelEvent settings = GetSettingsEvent();
+                if (settings != null)
+                {
+                    try
+                    {
+                        if (settings.TryGet<object>(KeyPagerWindowScale, out object raw) && raw != null)
+                        {
+                            float value;
+                            if (raw is float single)
+                                value = single;
+                            else if (raw is double number)
+                                value = (float)number;
+                            else if (raw is int integer)
+                                value = integer;
+                            else if (raw is long big)
+                                value = big;
+                            else if (!float.TryParse(raw.ToString(), System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture, out value))
+                                value = float.NaN;
+                            if (!float.IsNaN(value) && !float.IsInfinity(value))
+                                return ClampPagerWindowScale(value);
+                        }
+                    }
+                    catch { }
+                }
+                return 1f;
+            }
+        }
+
+        /// <summary>把倍率夹到合法区间（NaN 当 1.0 处理；调用方一般已经判过有限性）。</summary>
+        internal static float ClampPagerWindowScale(float value)
+        {
+            if (float.IsNaN(value))
+                return 1f;
+            if (value < PagerWindowScaleMin)
+                return PagerWindowScaleMin;
+            if (value > PagerWindowScaleMax)
+                return PagerWindowScaleMax;
+            return value;
+        }
+
         /// <summary>设置面板编辑的是"事件自定义分组"那一套（缺省 false = 装饰分组）。见 §17.2。</summary>
         internal static bool EventGroupEditing => EditTarget == GroupEditTarget.Event;
 
@@ -538,6 +611,59 @@ namespace ADOFAIEditorExtension
             return fallback;
         }
 
+        /// <summary>
+        /// 读一个 float 设置项：字段缺失 / 类型不对 / 非有限数（NaN、±Infinity）都回落到 <paramref name="fallback"/>。
+        /// 只做类型与有限性判断，不夹取范围 —— 范围由各自的属性（例如 <see cref="PagerWindowScale"/>）决定。
+        /// </summary>
+        internal static bool TryGetFloatSetting(string key, out float value)
+        {
+            value = 0f;
+            LevelEvent settings = GetSettingsEvent();
+            if (settings == null)
+                return false;
+            try
+            {
+                if (!settings.TryGet<object>(key, out object raw) || raw == null)
+                    return false;
+                float parsed;
+                if (raw is float single)
+                    parsed = single;
+                else if (raw is double number)
+                    parsed = (float)number;
+                else if (raw is int integer)
+                    parsed = integer;
+                else if (raw is long big)
+                    parsed = big;
+                else if (!float.TryParse(raw.ToString(), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out parsed))
+                    return false;
+                if (float.IsNaN(parsed) || float.IsInfinity(parsed))
+                    return false;
+                value = parsed;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>把一个 float 设置项写进设置事件（SettingsStore 读盘时用；设置事件还不存在时静默失败）。</summary>
+        internal static void SetFloatSetting(string key, float value)
+        {
+            LevelEvent settings = GetSettingsEvent();
+            if (settings == null)
+                return;
+            try
+            {
+                settings[key] = value;
+            }
+            catch (Exception e)
+            {
+                Logger?.Log("写入 float 设置 " + key + " 失败: " + e.Message);
+            }
+        }
+
         /// <summary>字段值变化回调（由 Patches.PropertyPanelPatches 调用）；返回 false 表示回滚该值。</summary>
         internal static bool OnSettingChanged(LevelEvent levelEvent, string key, object oldValue, object newValue)
         {
@@ -563,6 +689,17 @@ namespace ADOFAIEditorExtension
                     // 这里只通知分组模块刷新（§17.3）
                     DecoGroupState.OnWriteModeChanged();
                 }
+
+                // 窗口三连（自动调节 / 倍率 / 吸附）：原版 PropertyControl_Bool.SetValue 已经调过
+                // ToggleOthersEnabled（⇒ 所有行的 CheckIfEnabled + SetEnabled），这里再通知控制器按新值
+                // 重算一次几何并落盘。倍率行的置灰**不靠**这里，靠 PrefabProperties 里的 disableIf 元数据。
+                if (key == KeyPagerAutoWindowSize || key == KeyPagerWindowScale || key == KeyPagerWindowSnap)
+                {
+                    PagerListController.OnWindowSettingsChanged();
+                    // 兜底重算一次所有行的启用状态（正常路径原版已经算过，见 PrefabProperties 的说明）
+                    PrefabProperties.ReapplyWindowRowEnabled();
+                }
+
                 // 值变化后重新套用可见性（与 MultiTrackHelper 的 onChange → activeChilden 一致）：
                 // 游戏在某些刷新路径里会把属性行重新显示出来，只靠 SetProperties 后置补丁盖不住。
                 activeChilden();

@@ -20,10 +20,56 @@ namespace ADOFAIEditorExtension
             Main.KeyAutoGroupMode,
             Main.KeyShowGroupCounts,
             Main.KeyPagerListEnabled,
+            Main.KeyPagerAutoWindowSize,
+            Main.KeyPagerWindowScale,
+            Main.KeyPagerWindowSnap,
             Main.KeyEventGroupEditing,
             Main.KeyWriteGroupConfig,
             "addGroup"
         };
+
+        /// <summary>
+        /// 「窗口放大倍率」那一行的无条件置灰/恢复：把 <c>PropertyControl.UpdateEnabled()</c> 对所有行重跑一遍。
+        ///
+        /// 正常路径**不需要**调用它 —— 原版就有两处会自己重算（IL 已核，见
+        /// <c>工作记录</c> 一节）：
+        ///  · <c>PropertyControl_Bool.SetValue</c> → <c>ToggleOthersEnabled</c>（用户点开关时）；
+        ///  · <c>PropertyControl_Text.&lt;Setup&gt;b__17_1</c> → <c>ToggleOthersEnabled</c>（文本框结束编辑时）；
+        ///  · <c>PropertiesPanel.SetProperties</c> 循环结束后也会调一次 <c>ToggleOthersEnabled</c>；
+        /// 而 <c>ToggleOthersEnabled</c> 内部对每一行调 <c>UpdateEnabled</c> ⇒ <c>PropertyInfo.CheckIfEnabled</c>
+        /// ⇒ <c>PropertyControl.SetEnabled</c>（Graphic 变灰 + 所有 Selectable.interactable = false）。
+        ///
+        /// 这里是兜底：万一某条原版刷新路径没跑到（例如游戏改版删掉了上面某次调用），
+        /// 也能保证"Auto 关 ⇒ 倍率行真的灰掉且点不动"，不需要我们自己写置灰逻辑。
+        /// 取不到控件时静默返回（面板没打开 / 已经重建过）。
+        /// </summary>
+        internal static void ReapplyWindowRowEnabled()
+        {
+            try
+            {
+                if (Main.Aee == null || scnEditor.instance == null || scnEditor.instance.settingsPanel == null)
+                    return;
+                // 类型名写全：本文件里有 ADOFAIEditorExtension.PropertyCollection.Property，
+                // 一旦 using ADOFAI 就会和原版的 ADOFAI.Property 撞名（CS0104）
+                List<ADOFAI.PropertiesPanel> panels = scnEditor.instance.settingsPanel.panelsList;
+                if (panels == null)
+                    return;
+                ADOFAI.PropertiesPanel panel = panels.Find(p => p != null && p.name == Main.Aee.name);
+                if (panel == null || panel.properties == null)
+                    return;
+                foreach (KeyValuePair<string, ADOFAI.Property> pair in panel.properties)
+                {
+                    if (pair.Value == null || pair.Value.control == null)
+                        continue;
+                    try { pair.Value.control.UpdateEnabled(); }
+                    catch { }
+                }
+            }
+            catch (Exception e)
+            {
+                Main.Logger?.Log("重算设置行启用状态失败: " + e.Message);
+            }
+        }
 
         /// <summary>第 index 行的三个字段名（0 基）—— 装饰那一套。</summary>
         public static string NameKey(int index) => DecoGroupState.NameKey(DecoGroupState.GroupSet.Decoration, index);
@@ -82,6 +128,40 @@ namespace ADOFAIEditorExtension
                     name: Main.KeyPagerListEnabled,
                     value_default: true,
                     key: "aee.pagerListEnabled"
+                ),
+                // —— 直选弹窗的窗口行为（三条）。位置：紧跟「分页器直选列表」，在「编辑目标」之前 ——
+                new Property_Bool(
+                    name: Main.KeyPagerAutoWindowSize,
+                    value_default: true,                    // 默认开：保持弹窗一直以来的"按行数自动定高"
+                    key: "aee.pagerAutoWindowSize"
+                ),
+                // 倍率：**数值输入框**（Property_InputField + InputType.Float ⇒ 原版 PropertyControl_Text，
+                // 也就是和原版其它 Float 字段一样的输入框），min/max 交给原版 PropertyInfo.Validate(float)
+                // 与 PropertyControl.ValidateInput 在输入时夹取；data 里另外存一份 default 供面板回填。
+                //
+                // 置灰走**原版 enableIf 机制**（IL 已核，v2/v3 都支持）：
+                //   PropertyInfo.ctor 把 data["enableIf"] 这个扁平列表 ["pagerAutoWindowSize", "true"]
+                //   经 RDEditorUtils.DecodeStringArray + Tuple 建成 enableIfVals；
+                //   PropertyControl.ToggleOthersEnabled → UpdateEnabled → CheckIfEnabled → ValueMatch
+                //   会在「Auto 开关被点」与「面板 SetProperties」时重算，然后 SetEnabled(false, true)
+                //   把这一行所有 Graphic 变灰（Color.gray）、所有 Selectable.interactable = false
+                //   ⇒ 既不能点也不能输入。我们不需要自己写置灰代码。
+                new Property_InputField(
+                    name: Main.KeyPagerWindowScale,
+                    type: Property_InputField.InputType.Float,
+                    value_default: 1f,                      // 默认 1.0
+                    min: Main.PagerWindowScaleMin,          // 0.5
+                    max: Main.PagerWindowScaleMax,          // 2.5
+                    key: "aee.pagerWindowScale",
+                    enableIf: new Dictionary<string, string> { { Main.KeyPagerAutoWindowSize, "true" } }
+                ),
+                // 吸附：作用于**拖动标题移动窗口**，吸到屏幕四边/四角，不改变窗口大小。
+                // 它和上面的「自动调节窗口」互不干扰 —— 自动尺寸只锁"拖边缘缩放"，两种模式下都能拖标题，
+                // 所以这个开关在自动尺寸开或关时都有效（不要写成"只在关闭自动尺寸后才生效"）。
+                new Property_Bool(
+                    name: Main.KeyPagerWindowSnap,
+                    value_default: false,                   // 默认关：不改变现有拖动手感
+                    key: "aee.pagerWindowSnap"
                 ),
                 // 「编辑目标」（装饰分组 / 事件分组）：**两成员枚举**，原版就会渲染成并排两个按钮
                 // （与 MultiTrackHelper 的 affectAt 同款），而不是下拉框（§17.4）。

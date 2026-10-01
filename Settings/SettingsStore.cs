@@ -17,13 +17,21 @@ namespace ADOFAIEditorExtension.Settings
     /// 文件：<c>&lt;mod 目录&gt;/Settings.json</c>（用户数据，不随 mod 发布、不进版本库）。格式：
     /// <code>
     /// { "version": 1, "decoGroupingEnabled": true, "autoGroupMode": "ByType", "showGroupCounts": true,
-    ///   "pagerListEnabled": true, "eventGroupEditing": "Decoration", "writeGroupConfig": false,
+    ///   "pagerListEnabled": true, "pagerAutoWindowSize": true, "pagerWindowScale": 1.0,
+    ///   "pagerWindowSnap": false, "eventGroupEditing": "Decoration", "writeGroupConfig": false,
     ///   "decorationGroupCount": 1, "decorationGroups": [ { "name": "...", "tag": "...", "color": "rrggbbaa" } ],
-    ///   "eventGroupCount": 0, "eventGroups": [] }
+    ///   "eventGroupCount": 0, "eventGroups": [],
+    ///   "pagerWindow": { "width": 0, "height": 0, "x": 0.5, "y": 0.5, "snapEdges": 0 } }
     /// </code>
+    /// <c>pagerWindow</c> 是分页器弹窗的布局偏好（手调宽高 / 归一化位置 / 吸附边），见
+    /// <see cref="PagerWindowPreferences"/>：它**不是**设置页上的开关，只在拖拽结束时被控制器写一次，
+    /// 也是本文件里唯一"值不在设置事件上"的一组字段。缺失或字段非法时全部回落到"没有偏好"。
+    /// 其中 <c>x</c>/<c>y</c>（位置）与 <c>snapEdges</c>（贴边）来自**拖动标题移动窗口**，
+    /// 自动尺寸开着或关着都能拖，所以两种模式下都会更新；吸附只改位置、不改窗口大小。
     /// 读取按字段逐个宽松解析：缺字段 / 类型不对的字段保持默认值，整个文件缺失或损坏 ⇒ 全用默认值 + 一行日志，绝不抛出。
     /// <c>color</c> 是组头颜色（原版约定的小写 hex：8 位 rrggbbaa，默认 <c>ffffff00</c> = 全透明纯白 = 不着色）；
     /// 缺这个字段或值不合法都按默认色处理（<see cref="CurrentVersion"/> 仍是 1：新增字段向后兼容，老文件照样能读）。
+    /// 窗口那三连（自动调节 / 倍率 / 吸附）与倍率行同样是"新增字段向后兼容"，没有动版本号。
     /// 写入走"临时文件 + 替换"保证原子性；内容与上次一致时跳过写盘；IO 异常只记日志。
     /// <c>CustomTab.saveSetting == false</c> 时整个持久化关闭（读写都跳过）。
     /// </summary>
@@ -40,6 +48,14 @@ namespace ADOFAIEditorExtension.Settings
         private const string KeyGroupName = "name";
         private const string KeyGroupTag = "tag";
         private const string KeyGroupColor = "color";
+        // 分页器弹窗的布局偏好（5 项，见 <see cref="PagerWindowPreferences"/>）：
+        // 单独一个 root.pagerWindow 对象，与上面这些平级；缺字段/非法值一律宽松回落到"没有偏好"。
+        private const string KeyPagerWindow = "pagerWindow";
+        private const string KeyPagerWidth = "width";
+        private const string KeyPagerHeight = "height";
+        private const string KeyPagerPosX = "x";
+        private const string KeyPagerPosY = "y";
+        private const string KeyPagerSnap = "snapEdges";
 
         /// <summary>是否已经跑过 <see cref="Load"/>：没读过就写会拿默认值覆盖掉磁盘上的设置，所以 Save 以它为前提。</summary>
         private static bool loaded;
@@ -87,7 +103,7 @@ namespace ADOFAIEditorExtension.Settings
                 JObject root;
                 try
                 {
-                    root = JObject.Parse(text);
+                    root = ParseLoose(text);
                 }
                 catch (Exception parseError)
                 {
@@ -98,6 +114,9 @@ namespace ADOFAIEditorExtension.Settings
                 }
 
                 Apply(root, settings);
+                // 窗口布局偏好存在静态字段里，不在设置事件上：必须先 Load 一次再谈"内容没变就不写盘"，
+                // 否则第一次 Save 会把刚读到的偏好当成默认值写回去（见 ApplyPagerWindow 的说明）。
+                ApplyPagerWindow(root);
                 // 以"按当前值重新序列化"作为基准：读回来的值没变时，下一次 Save 不会只因格式差异就重写文件
                 lastContent = Serialize(settings);
                 Main.Logger?.Log(string.Format("已读取设置文件 {0}：自定义分组 装饰 {1} 行 / 事件 {2} 行",
@@ -107,6 +126,41 @@ namespace ADOFAIEditorExtension.Settings
             catch (Exception e)
             {
                 Main.Logger?.Log("读取设置文件失败，使用默认设置: " + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// 宽松解析：先用默认设置解析；失败时退回"整数一律当 double 读"的 reader 再试一次。
+        ///
+        /// 原因：Newtonsoft 在 .NET Framework 上读到 JSON 里的 <c>NaN</c> / <c>Infinity</c>
+        /// （消歧写法，例如手改过的 <c>"pagerWindowScale": NaN</c>）会直接抛 JsonReaderException。
+        /// 那一步失败原本会把**整份设置**当损坏文件另存 .bad 并全部回落默认值 —— 对新增的倍率字段来说太狠了。
+        /// 第二次解析把数字统一当 double（<c>ReadAsDouble</c> 自己就能处理 NaN/Infinity），于是文件其余部分照常读出来，
+        /// 坏掉的只是那一个字段（<see cref="ReadNullableFloat"/> 会把它判成"不可用"）。两次都失败才算真损坏。
+        /// </summary>
+        private static JObject ParseLoose(string text)
+        {
+            try
+            {
+                return JObject.Parse(text);
+            }
+            catch (JsonException firstError)
+            {
+                try
+                {
+                    using (var reader = new JsonTextReader(new StringReader(text)))
+                    {
+                        reader.FloatParseHandling = FloatParseHandling.Double;
+                        JObject retried = JObject.Load(reader);
+                        if (retried != null)
+                        {
+                            Main.Logger?.Log("设置文件里有非法数字（NaN/Infinity 之类），已按「跳过该字段」处理: " + firstError.Message);
+                            return retried;
+                        }
+                    }
+                }
+                catch { }
+                throw;      // 第二次也失败 ⇒ 原样抛出，交给调用方按"文件损坏"处理
             }
         }
 
@@ -121,6 +175,14 @@ namespace ADOFAIEditorExtension.Settings
             ApplyBool(root, settings, Main.KeyShowGroupCounts);
             ApplyBool(root, settings, Main.KeyPagerListEnabled);
             ApplyBool(root, settings, Main.KeyWriteGroupConfig);
+            // 窗口三连里的两个 bool 也照原有 settings 字段持久化（与上面几行同款）
+            ApplyBool(root, settings, Main.KeyPagerAutoWindowSize);
+            ApplyBool(root, settings, Main.KeyPagerWindowSnap);
+
+            // 倍率是 float：缺失/非法/NaN/Infinity 一律回落到默认 1.0，有限但越界的夹到 0.5..2.5
+            float scale = ReadFloat(root[Main.KeyPagerWindowScale]);
+            if (!float.IsNaN(scale) && !float.IsInfinity(scale))
+                settings[Main.KeyPagerWindowScale] = Main.ClampPagerWindowScale(scale);
 
             if (TryReadEnum(root[Main.KeyAutoGroupMode], out AutoGroupMode autoMode))
                 settings[Main.KeyAutoGroupMode] = autoMode;
@@ -168,6 +230,92 @@ namespace ADOFAIEditorExtension.Settings
             }
             catch { }
             return fallback;
+        }
+
+        /// <summary>
+        /// 读一个 float：缺失 / 不是数字 / 是 JSON 里的 NaN、Infinity（Newtonsoft 的消歧写法 "NaN" 等）
+        /// 一律返回 <see cref="float.NaN"/> 表示"这个字段不可用"。绝不抛。
+        /// </summary>
+        private static float ReadFloat(JToken token)
+        {
+            float? value = ReadNullableFloat(token);
+            return value.HasValue ? value.Value : float.NaN;
+        }
+
+        private static float? ReadNullableFloat(JToken token)
+        {
+            if (token == null)
+                return null;
+            try
+            {
+                if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+                    return (float)token;
+                if (token.Type == JTokenType.String
+                    && float.TryParse((string)token, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out float parsed))
+                    return parsed;
+            }
+            catch
+            {
+                // 显式 NaN / Infinity：Newtonsoft 在 net4.8 上会直接抛，这里当"字段不可用"处理
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 读 <c>root.pagerWindow</c>（分页器弹窗的手调宽高 / 归一化位置 / 吸附边）到
+        /// <see cref="PagerWindowPreferences"/>。
+        ///
+        /// 宽松策略（与文件的其它字段一致）：
+        ///  · 整个对象缺失 / 不是对象 ⇒ 保持默认（宽高 0 = 没手调、位置 0.5、不吸附）；
+        ///  · 宽高：缺失 / 非法 / NaN / Infinity ⇒ 保持默认 0；&lt; 1 也当 0；有效值夹到 &lt;= 10000；
+        ///  · 位置：缺失 / 非法 ⇒ 保持默认 0.5；有效值夹到 0..1（拖动标题移动窗口时记录，两种模式都有）；
+        ///  · 吸附边：缺失 / 非法 ⇒ 0；否则按位规范化（丢未知位、左右/上下只留一条）。
+        ///    吸附只影响位置，不会改变这里记的宽高。
+        /// 两个宽高只有**都**合法才会一起写进去，免得留下"有宽没高"的半套数据。
+        /// </summary>
+        private static void ApplyPagerWindow(JObject root)
+        {
+            JObject window = root[KeyPagerWindow] as JObject;
+            if (window == null)
+            {
+                PagerWindowPreferences.Reset();
+                return;
+            }
+
+            float? x = ReadNullableFloat(window[KeyPagerPosX]);
+            float? y = ReadNullableFloat(window[KeyPagerPosY]);
+            if (x.HasValue && y.HasValue && !float.IsNaN(x.Value) && !float.IsNaN(y.Value)
+                && !float.IsInfinity(x.Value) && !float.IsInfinity(y.Value))
+                PagerWindowPreferences.TrySetPosition(PagerWindowPreferences.Clamp01(x.Value), PagerWindowPreferences.Clamp01(y.Value));
+
+            float? width = ReadNullableFloat(window[KeyPagerWidth]);
+            float? height = ReadNullableFloat(window[KeyPagerHeight]);
+            if (width.HasValue && height.HasValue
+                && PagerWindowPreferences.TrySanitizeManualSize(width.Value, out float safeWidth)
+                && PagerWindowPreferences.TrySanitizeManualSize(height.Value, out float safeHeight)
+                && safeWidth > 0f && safeHeight > 0f)
+                PagerWindowPreferences.TrySetManualSize(safeWidth, safeHeight);
+            else
+                PagerWindowPreferences.TrySetManualSize(0f, 0f);    // 半套 / 全坏 ⇒ 明确回到"没手调过"
+
+            int? edges = ReadNullableInt(window[KeyPagerSnap]);
+            PagerWindowPreferences.TrySetSnapEdges(edges.HasValue ? edges.Value : 0);
+        }
+
+        private static int? ReadNullableInt(JToken token)
+        {
+            if (token == null)
+                return null;
+            try
+            {
+                if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+                    return (int)Math.Round((double)token);
+                if (token.Type == JTokenType.String && int.TryParse((string)token, out int parsed))
+                    return parsed;
+            }
+            catch { }
+            return null;
         }
 
         private static string ReadText(JToken token)
@@ -258,7 +406,34 @@ namespace ADOFAIEditorExtension.Settings
             };
             WriteGroups(root, settings, DecoGroupState.GroupSet.Decoration, KeyDecoCount, KeyDecoGroups);
             WriteGroups(root, settings, DecoGroupState.GroupSet.Event, KeyEventCount, KeyEventGroups);
+            root[KeyPagerWindow] = BuildPagerWindow();
             return root.ToString(Formatting.Indented);
+        }
+
+        /// <summary>
+        /// 弹窗布局偏好那 5 项。**不**走 <see cref="Main.IsPagerListEnabled"/> 那套"从设置事件重新读一遍"的写法：
+        /// 这几个值只在拖拽/缩放结束时被 <c>PagerListController</c> 写进 <see cref="PagerWindowPreferences"/>，
+        /// 设置事件里压根没有对应字段，所以这里直接序列化静态字段当前值（写出前再规范化一次，保证落盘的永远合法）。
+        /// 写盘时机由调用方决定（拖拽结束时调一次 Save），不会每帧写。
+        /// </summary>
+        private static JObject BuildPagerWindow()
+        {
+            float width = 0f, height = 0f;
+            if (PagerWindowPreferences.HasManualSize
+                && PagerWindowPreferences.TrySanitizeManualSize(PagerWindowPreferences.ManualWidth, out float w)
+                && PagerWindowPreferences.TrySanitizeManualSize(PagerWindowPreferences.ManualHeight, out float h))
+            {
+                width = w;
+                height = h;
+            }
+            return new JObject
+            {
+                [KeyPagerWidth] = width,
+                [KeyPagerHeight] = height,
+                [KeyPagerPosX] = PagerWindowPreferences.Clamp01(PagerWindowPreferences.PositionX),
+                [KeyPagerPosY] = PagerWindowPreferences.Clamp01(PagerWindowPreferences.PositionY),
+                [KeyPagerSnap] = PagerWindowPreferences.SanitizeSnapEdges(PagerWindowPreferences.SnapEdges)
+            };
         }
 
         private static void WriteGroups(JObject root, LevelEvent settings, DecoGroupState.GroupSet set, string countKey, string listKey)

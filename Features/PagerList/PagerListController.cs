@@ -270,6 +270,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
         private const float HeaderArrowZoneMax = 160f;      // 箭头点击区上限：再宽就会把组名区挤没了
 
         private static GameObject popupRoot;
+ private static PagerWindowInteraction windowInteraction;
         private static TMP_Text titleText;
         private static Button closeButton;
         private static ScrollRect scrollRect;
@@ -924,6 +925,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
         /// <summary>编辑器（重新）加载：弹窗对象随场景销毁，清掉引用。</summary>
         internal static void Reset()
         {
+            if (windowInteraction != null)
+                UnityEngine.Object.Destroy(windowInteraction);
+            windowInteraction = null;
             popupRoot = null;
             titleText = null;
             closeButton = null;
@@ -4134,6 +4138,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
             closeButton = CloneCloseButton(hostButton);
             BuildScrollArea(popupRoot.transform);
             BuildTopCap();
+            windowInteraction = popupRoot.AddComponent<PagerWindowInteraction>();
+            windowInteraction.Initialise((RectTransform)popupRoot.transform, scrollRect, rowHeight,
+                HeaderHeight, FooterHeight, ListPaddingY, RowSpacing);
 
             popupRoot.SetActive(false);
             return titleText != null && listContent != null;
@@ -4547,10 +4554,21 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>把弹窗撑到刚好装下 min(行数, MaxVisibleRows) 行（多了在列表里滚动）。</summary>
+        internal static void OnWindowSettingsChanged()
+        {
+            if (popupRoot != null && popupRoot.activeInHierarchy)
+                windowInteraction?.SettingsChanged();
+        }
+
         private static void ResizeHost(int rowCount)
         {
             if (popupRoot == null)
                 return;
+            if (windowInteraction != null)
+            {
+                windowInteraction.Configure(rowCount);
+                return;
+            }
             var hostRT = (RectTransform)popupRoot.transform;
             int visible = Mathf.Clamp(rowCount, 1, MaxVisibleRows);
             float listHeight = visible * rowHeight + (visible - 1) * RowSpacing + 2f * ListPaddingY + 6f;
