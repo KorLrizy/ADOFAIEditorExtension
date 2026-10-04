@@ -20,6 +20,8 @@ The decoration list on the left is grouped automatically by type / `tag` / custo
 - **Optional write-back to the level file**: manual assignments can live only in the current session, or be written into the level file (decoration key `aeeGroupDeco`, event key `aeeGroupEvent`). Off by default — see [Caveats and level compatibility](#caveats-and-level-compatibility).
 
 ### Pager jump-to-event popup
+<img width="2560" height="1487" alt="Click the slash in the pager to open the event list" src="images/pager-popup.png" />
+Click the slash in the pager to open the event list.
 
 Events of the same type at the same position are stacked by the vanilla editor into a `◀ 1/3 ▶` pager that you can only step through one at a time. **Click the pager text itself** to open a scrollable jump list instead (the vanilla prev/next arrows still work as before).
 
