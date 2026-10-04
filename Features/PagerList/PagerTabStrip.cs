@@ -151,44 +151,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>
-        /// 一次性诊断用（由 <c>PagerListController</c> 在弹窗第一次显示、页签建好之后打一行）：
-        /// 把 <see cref="ProbeNative"/> 探到的原生外观、以及"实际建了几枚页签"说成一句话，
-        /// 便于真机定位"页签没有圆角外框 / 图标槽贴错边 / 一枚都没建出来"这类层级与资源问题。
-        /// 探不到是**正常状态**（prefab 还没就绪），不是错误，所以这里只是如实描述、不抛异常。
-        /// </summary>
-        internal string Diagnostics()
-        {
-            try
-            {
-                string frame = !native.Probed
-                    ? "还没探到原生 prefab_tab（RDConstants.data.prefab_tab 未就绪）"
-                    : (native.HasFrame
-                        ? "有底板（sprite=" + (native.Frame != null ? native.Frame.name : "null（纯色底）")
-                            + "，type=" + native.FrameType + "，pixelsPerUnitMultiplier=" + native.FramePixelsPerUnit + "）"
-                        : "取不到底板 Image");
-                string icon = native.HasIconLayout
-                    ? "有图标槽布局（size=" + native.IconSize.x + "×" + native.IconSize.y
-                        + "，anchors=" + native.IconAnchorMin + ".." + native.IconAnchorMax + "）"
-                    : "取不到图标槽布局（用兜底 30×30）";
-                // 原生页签是"只有一圈描边"还是"描边 + 单独填充底"：决定我们建不建 fill 那一层。
-                // 只有描边 ⇒ 内部本来透明，透出下面的原生页签不是"少了一层"，得靠兄弟顺序修（见 PagerListController.EnsureAboveNativePanels）。
-                string fill = !native.Probed
-                    ? "填充底未知（prefab 未就绪）"
-                    : (native.HasFill
-                        ? "有填充底（sprite=" + (native.FillSprite != null ? native.FillSprite.name : "null（纯色）")
-                            + "，type=" + native.FillType + "，color=" + native.FillColor.ToString() + "）"
-                        : "原生页签只有描边、没有单独填充底");
-                return "HasFrame=" + native.HasFrame + " HasIconLayout=" + native.HasIconLayout
-                    + " HasFill=" + native.HasFill
-                    + " 页签数=" + items.Count + "；" + frame + "；" + icon + "；" + fill;
-            }
-            catch (Exception e)
-            {
-                return "读取原生外观探测结果失败: " + e.Message;
-            }
-        }
-
-        /// <summary>
         /// 按 <see cref="PagerListController.Tabs"/> 刷新整条：内容变了才重建页签，
         /// 没变（例如只是切了页 / 换了窗口尺寸）就只重排 + 换高亮 —— 这两条路径都很频繁。
         /// </summary>

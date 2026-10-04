@@ -285,30 +285,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
             owner = null;
         }
 
-        /// <summary>
-        /// 一次性诊断用：这个入口按钮挂在哪、多大、显示中还是隐藏。
-        /// 真机截图上"原生页签之上那个汉堡图标"要先确认是不是它 —— 它建在原生面板头部（<c>titleCanvas</c>）里，
-        /// 并且自己 <c>SetAsLastSibling</c> 在面板内部，所以它天然画在原生页签**之上**，与标签条的层级无关。
-        /// 拿不到就如实说明，不抛异常。
-        /// </summary>
-        internal static string DescribeForDiagnostics()
-        {
-            try
-            {
-                if (buttonRoot == null)
-                    return "未建（或已随编辑器销毁）";
-                Transform parent = buttonRoot.transform.parent;
-                return (buttonRoot.activeInHierarchy ? "显示中" : "隐藏")
-                    + "，父=" + (parent != null ? parent.name : "无父节点")
-                    + "，世界矩形=" + PagerListController.DescribeWorldRect(buttonRoot.transform)
-                    + "，所属面板=" + (owner != null ? owner.name : "无");
-            }
-            catch (Exception e)
-            {
-                return "读取失败: " + e.Message;
-            }
-        }
-
         /// <summary>编辑器重载：对象随场景一起没了，只清引用（下一次 <c>ShowTabsForFloor</c> 会重建）。
         /// 标题的复原靠 <see cref="RestoreTitle"/> 的 fake-null 判断：随场景销毁就什么都不做。</summary>
         internal static void Reset()

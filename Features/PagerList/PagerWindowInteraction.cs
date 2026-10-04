@@ -40,10 +40,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
         private Camera dragCamera;
         private float unitsPerPixel = 1f;
 
-        /// <summary>叠放层级自检的低频节流：每 <see cref="StackingCheckSeconds"/> 秒最多查一次。</summary>
-        private const float StackingCheckSeconds = 0.5f;
-        private static float nextStackingCheck = -1f;
-
         internal void Initialise(RectTransform root, ScrollRect list, float itemHeight, float header, float footer, float listPaddingY, float rowSpacing)
         {
             host = root;
@@ -55,27 +51,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
             spacing = rowSpacing;
             BuildHandles();
             nativeFeedback = PagerNativeResizeFeedback.Create(root);
-        }
-
-        /// <summary>
-        /// 叠放层级：弹窗（含它**外面**那条标签条）必须画在两个原生 <c>InspectorPanel</c> 之后。
-        ///
-        /// 为什么不做 sortingOrder 那一套：v2.9.8 真机诊断已确认弹窗根与原生面板的 <c>tabs</c> 在
-        /// **同一个 rootCanvas**（"levelEditorScene"，renderMode=ScreenSpaceOverlay、overrideSorting=False、
-        /// sortingOrder=1），场景里也没有别的带 overrideSorting 的 Canvas ⇒ 谁在上面完全由同一 Canvas 下的
-        /// 祖先兄弟顺序决定，给弹窗根挂 Canvas/GraphicRaycaster 那一套在这里不成立（已删除）。
-        ///
-        /// 真正要防的是"我们的祖先兄弟顺序被排到原生面板之前"：<see cref="PagerListController.EnsureAboveNativePanels"/>
-        /// 只在这种确实排错的情况下把最上层那个祖先进 <c>SetAsLastSibling</c> 一次（幂等、不每帧无条件抢层级，
-        /// 所以不会去和原生弹窗（颜色选择器那类 sortingOrder 30000+ 的独立 Canvas）抢）。
-        /// 低频节流：约每 0.5 秒查一次，查的是几个 <c>GetSiblingIndex</c>，代价可忽略。
-        /// </summary>
-        private static void EnsureStacking()
-        {
-            if (Time.unscaledTime < nextStackingCheck)
-                return;
-            nextStackingCheck = Time.unscaledTime + StackingCheckSeconds;
-            PagerListController.EnsureAboveNativePanels();
         }
 
         /// <summary>
@@ -437,7 +412,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
         {
             if (host == null || !Main.IsEnabled || !PagerListController.IsPopupOpen)
                 return;
-            EnsureStacking();     // 低频（约 0.5s）自检：只在真的被排到原生面板之前时才动一次
             WindowRect bounds;
             float pixelUnits;
             if (!TryGetBounds(out bounds, out pixelUnits))

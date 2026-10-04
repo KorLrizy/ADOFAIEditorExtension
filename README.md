@@ -46,9 +46,23 @@
   （文本输入框有焦点时不拦截，保留文本框自己的撤销）。撤销后的选中集与当前事件按内容重新对应，
   列表、右侧属性面板与装饰栏一起刷新。
   注意：v2.9.8 线**不含** PACL2 BetterUndoRedo 兼容（只在 v3.3.1 版本中提供）。
+- **头部入口按钮**：原生事件面板的头部、删除按钮左边多一个入口图标，门槛是**整块砖上 ≥ 2 个事件（不限类型）**
+  —— 分页器箭头那三个入口要求「**这一型** ≥ 2 个事件」，一块砖上不同类型的各只有一个时就没有箭头可点，
+  这个入口补的正是这种情况（图标自己画三根白杠，底板只当透明点击区，悬停照邻居按钮染色）。
+  点开直接停在「全部」页；开着窗时再点 = 切回「全部」页，已经在「全部」页时再点 = 关窗。
+- **移到最上 / 最下**：弹窗开着时 `ctrl-shift-↑` 把选中的事件（没多选就是当前行那一个）移到
+  **当前标签页那份列表**的最前，`ctrl-shift-↓` 移到最后——「全部」页 = 这块砖上的全部事件（可跨类型），
+  类型页 = 该类型的事件，「自定义分组」页 = 自定义分组里的事件；列表之外的事件位置完全不动。
+  多选时整批一起移，保持原有相对顺序，
+  顺序本来就在最前/最后时什么都不做（不多留撤销点），
+  一次按键一步撤销，弹窗内 `ctrl-z` 可原样撤回（与拖动排序同一套提交）。
+- **左侧标签页**：弹窗左边按这块砖上的事件列出标签页——「全部」、每种事件类型一页、再合并一枚「自定义分组」页
+  （只列归入任一自定义事件分组的事件，按各分组的组头分节），点标签切换列表。
+  **不可堆叠的事件**（`EditorConstants.soloTypes` 里的类型，如旋转 / 检查点 / 书签，每块砖最多一个）
+  不单独建标签页，只在「全部」页里显示。
 - **事件备注**：见下节，备注显示在事件行的右侧（超长截断），悬停看完整内容。
 
-### 弹窗尺寸与位置（新功能，尚未包含在已发布的 1.2.0）
+### 弹窗尺寸与位置（1.3.0 新增）
 
 - **拖动标题移动窗口**：自动、手动两种尺寸模式都支持；不影响事件行的选择和拖动归组。
 - **自动调节窗口**（默认开）：按内容自动选取较宽的窗口和合适的列表高度；此时不能拖边/角缩放。
@@ -68,6 +82,25 @@
 备注会写进 `.adofai`，并显示在分页器直选列表事件行的**右侧**（超长截断），鼠标**悬停**该行弹出完整备注。
 空备注不会落盘（保存前把空的 `aeeNote` 摘掉），所以文件里不会凭空多出一堆空串。
 
+### 元数据侧车备份（1.3.0 新增）
+
+每次保存关卡时，本模组还会把**事件备注**与**手动分组归属**（装饰、事件两套）快照到关卡文件旁边的
+侧车文件 `<关卡路径>.aee.json`（例：`level.adofai` → `level.adofai.aee.json`），读档时自动恢复。
+
+- **它解决什么**：备注与归属存在事件的额外键里，用没装本模组的原版保存一次就可能丢掉。有了侧车，
+  即使关卡中途被原版或其它工具改写过，也能按内容把备注与归属对回对应的事件。
+- **怎么对回去**：三道比对依次放宽——① 整条事件内容完全一致；② 去掉砖位（加砖 / 删砖造成的整体平移不影响）；
+  ③「砖位 | 事件类型」一致（只改了参数的同一事件也认）。分组归属按分组**名称 + 标签**映射到当前分组表，
+  对不上的只跳过它自己，不影响其它条目。
+- **恢复不全时会说一声**：读档后弹一次提示，告诉你有多少条没能恢复、多少条恢复了；具体原因在 UMM 日志里，
+  同一句话只提示一次（每次保存 / 读档也会在 UMM 日志里留一行结果，包括"这次为什么没生成侧车"）。
+- **旧备份不会被静默覆盖**：本进程没能完整恢复、或没读过的旧侧车，会在下一次保存时先另存为
+  `<关卡路径>.aee.unrestored-<时间>.json`（同一秒撞名依次追加 `-2`、`-3`…），再写入新备份；
+  写侧车失败时磁盘上那份一个字节都不动。
+- **什么时候不生成文件**：本次没有备注 / 归属、且磁盘上没有旧侧车时直接跳过；关卡路径不以 `.adofai`
+  结尾时不参与。
+- 侧车只是备份，不改变关卡文件本身：删掉它不会损坏关卡，只会少一层恢复能力。
+
 ### 模组设置页
 
 模组自带一个 UI 标签页（放在编辑器的原版标签页序列里），用于开关上述功能、选择默认分组方式、
@@ -75,7 +108,7 @@
 字段值存于该标签页自己的 `LevelEvent`，因此**同一进程内切换关卡设置不丢**；
 同时持久化到 mod 目录下的 `Settings.json`，**重启游戏后仍然保留**。
 设置项包括：装饰分组总开关、分组方式、组头是否显示数量、分页器直选列表开关、编辑目标（装饰分组 / 事件分组）、
-以及"把分组归属写进关卡文件"开关（默认关闭）。
+以及"把分组归属写进关卡文件"开关（默认关闭；只决定保存关卡时是否把分组归属写进关卡文件本身）。
 
 ## 环境要求
 
@@ -88,7 +121,7 @@
 
 **方式一：Release 压缩包（推荐）**
 
-1. 从本仓库的 **Releases** 页面下载 `ADOFAIEditorExtension_v1.2.0_game-v2.9.8.zip`
+1. 从本仓库的 **Releases** 页面下载 `ADOFAIEditorExtension_v1.3.0_game-v2.9.8.zip`
    （同一个 Release 下的 `..._game-v3.3.1.zip` 是给游戏 v3.3.1 的包，**不要下错**）
 2. 打开游戏里的 Unity Mod Manager → **Mod** → **Install mod** → 选择该 zip
 3. 启动游戏，在 UMM 的 Mod 列表可见 "ADOFAI Editor Extension"，勾选启用
@@ -131,7 +164,8 @@ MSBuild ADOFAIEditorExtension.csproj -p:Configuration=Release -p:GameDir="D:\ste
 - **只有开了"把分组归属写进关卡文件"才会有额外键**。此时关卡会带上
   `aeeGroupDeco`（装饰分组归属）、`aeeGroupEvent`（事件分组归属），事件备注则始终会写入 `aeeNote`。
 - **原版能正常读**带这些键的关卡（未知键被忽略），但**用无 mod 的原版保存一次，这些键就会丢失**（分组归属、备注都没了）。
-  协作交付关卡时，请保证收发双方都装了本模组，或始终用本模组的编辑器保存。
+  协作交付关卡时，请保证收发双方都装了本模组，或始终用本模组的编辑器保存；万一是中途被原版保存过，
+  本模组的[元数据侧车备份](#元数据侧车备份130-新增)还能按内容把备注与归属对回对应的事件。
 - 建议：**分享关卡前先在带 mod 的环境下存一份**；这些键属于扩展数据，不承担玩法逻辑，丢了只影响分组与备注显示。
 - **批量编辑本身不写入任何东西**——它只是把改动落到已有事件字段上。分组归属与备注的落盘统一由上面那个开关（默认关闭）
   与"备注非空"这两条控制，因此**默认配置下关卡文件与原版完全一致**。
@@ -158,12 +192,14 @@ ADOFAI Editor extension\
 │   └── GroupEditTarget.cs         设置页"编辑目标"两态枚举（装饰分组 / 事件分组）
 ├── PropertyCollection\            面板字段类型（Property 基类 + Bool/Enum/InputField/Button/Color）
 ├── Settings\SettingsStore.cs       模组设置持久化（mod 目录下的 Settings.json）
-├── Utils\                         Reflections（私有成员访问）、LevelEventEX（UpdatePanel）、Popup
+├── Settings\PagerWindowPreferences.cs  弹窗布局偏好（手调宽高 / 位置 / 吸附边，存进 Settings.json 的 root.pagerWindow）
+├── Utils\                         Reflections（私有成员访问）、LevelEventEX（UpdatePanel）、Popup、TabIcon（标签页图标的内嵌资源加载）
 ├── Patches\
 │   ├── EditorIntegrationPatches.cs   GCS 注入 / ShowPanel 接管 / 本地化与枚举键改写
 │   ├── PropertyPanelPatches.cs       Export 按钮渲染 + 字段值变化回调
 │   ├── LevelEncodePatch.cs           关卡编码（LevelData.Encode）异常记日志的 Finalizer
-│   └── LevelDecodeRegistrationPatch.cs 读档（LevelData.Decode）前确保属性注册 + 读档后自检日志
+│   ├── LevelDecodeRegistrationPatch.cs 读档（LevelData.Decode）前确保属性注册 + 读档后自检日志
+│   └── LevelMetadataPatches.cs       元数据侧车（<关卡路径>.aee.json）的保存 / 读档对接层 + 每次保存读档一行结果日志
 ├── Features\DecoGrouping\
 │   ├── DecoGroupState.cs          槽位模型 + 折叠集合 + 组→装饰表 + 自定义分组行 + 手动归属
 │   ├── DecoGroupRenderer.cs       分组构建与 ApplyUpdateList 接管渲染 + 头行对象池 + 落点指示线
@@ -172,13 +208,21 @@ ADOFAI Editor extension\
 │   ├── DecoGroupModeButton.cs     面板底部工具栏里的"分组方式"循环按钮
 │   └── DecoGroupingPatches.cs     Harmony 补丁集
 ├── Features\PagerList\
-│   ├── PagerListController.cs     分页器点击入口 + 直选列表弹窗（分组/折叠/拖拽排序/多选/批量写回/备注列）
+│   ├── PagerListController.cs     分页器点击入口 + 直选列表弹窗（分组/折叠/拖拽排序/多选/批量写回/备注列/移到最上最下）
+│   ├── PagerEntryButton.cs        事件面板头部的「全部事件」入口按钮（类型无关，整块砖 ≥ 2 个事件即可开）
+│   ├── PagerTabStrip.cs           弹窗左侧标签条（All + 每个事件类型 + 合并的「自定义分组」页）
 │   ├── PagerClipboard.cs          弹窗内的复制/剪切/粘贴事件（复用原版剪贴板格式与快捷键表）
 │   ├── PagerUndo.cs               弹窗内撤销 / 重做（原版 SaveStateScope 路径）
+│   ├── PagerWindowInteraction.cs  拖动标题移动 / 拖边角缩放 / 自动吸附的交互层
+│   ├── PagerWindowGeometry.cs     窗口矩形、约束与吸附的纯几何（离线可测）
+│   ├── PagerNativeResizeFeedback.cs 缩放反馈复用原版面板分隔条的手柄图像
 │   └── PagerListPatches.cs        Harmony 补丁集（InspectorTab.Init / 选区与面板切换时关闭 / 弹窗快捷键）
 ├── Features\Notes\
 │   └── EventNote.cs               事件备注（aeeNote 属性注册 + 空备注不落盘的 Encode 后置补丁）
-├── Properties\AssemblyInfo.cs     程序集信息与版本（1.2.0.0）
+├── Features\Metadata\
+│   └── LevelMetadataStore.cs      侧车（<关卡路径>.aee.json）的纯逻辑：指纹对齐 / 分组身份映射 / 归档命名 / 原子写盘
+├── Resources\AeeTabIcon.png       标签页图标（按原版贴图离线生成，作为内嵌资源随 DLL 发布）
+├── Properties\AssemblyInfo.cs     程序集信息与版本（1.3.0.0）
 ├── LICENSE                        MIT
 └── README.md
 ```

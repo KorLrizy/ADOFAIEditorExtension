@@ -6,7 +6,6 @@ using DG.Tweening;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Text;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -389,8 +388,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
         // §47 弹窗左侧的标签条（步骤 3）：只读 Tabs / ActiveTab；页签表变了由 OnTabsChanged 驱动重建
         private static PagerTabStrip tabStrip;
         private static bool tabStripHooked;       // TabsChanged 是静态事件，只挂一次，别每开一次窗就多一个处理器
-        private static bool layoutDiagnosticsLogged;       // 一次性层级诊断：成功那条只打一次
-        private static bool layoutDiagnosticsErrorLogged;  // 诊断自己出异常时也只说一次，不刷屏
 
         // 行高来自装饰列表（原版 itemHeight），字体/配色一律沿用行 prefab 自身的设置
         private static float rowHeight = FallbackRowHeight;
@@ -1234,349 +1231,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
             tabStrip.Rebuild();
         }
 
-        // ------------------------------------------------------------------ 叠放层级（兄弟顺序）
-
-        /// <summary>上一次"被排到原生面板之前"而抬过一次的层级路径指纹：同一层级问题只记一条日志，不刷屏。</summary>
-        private static string stackingFixLogged;
-        private static bool stackingProblemLogged;      // "不在同一个 Canvas 下 / 改不了"这类结论只说一次
-
-        /// <summary>
-        /// 保证弹窗（含它外面那条标签条）在同一 Canvas 下画在两个原生 <see cref="InspectorPanel"/> **之后**。
-        ///
-        /// 为什么不用 Canvas/sortingOrder：v2.9.8 真机诊断已确认弹窗根与原生面板的 <c>tabs</c> 在同一个
-        /// rootCanvas（"levelEditorScene"，overrideSorting=False、sortingOrder=1），场景里没有别的带
-        /// overrideSorting 的 Canvas ⇒ 同一 Canvas 内谁在上面只由祖先兄弟顺序决定。
-        ///
-        /// 只在**真的排在原生面板之前**时才动一次：把两条链第一个分叉处属于我们的那个祖先
-        /// <c>SetAsLastSibling</c>。不每帧无条件抬（那会和原生弹窗——颜色选择器/GradientEditor 那类
-        /// 自带 Canvas、sortingOrder 30000+ 的独立层级——抢层级；它们不受这里影响，我们也不去压它们）。
-        ///
-        /// 调用时机：开窗收尾（<c>OpenCore</c> 里紧跟 <c>isOpen = true</c>）一次，之后由
-        /// <see cref="PagerWindowInteraction"/> 显示期间低频（约 0.5s）复查。
-        /// 整段兜异常：层级自检绝不能把开窗/帧循环带崩。
-        /// </summary>
-        internal static void EnsureAboveNativePanels()
-        {
-            try
-            {
-                if (!isOpen || popupRoot == null)
-                    return;
-                scnEditor editor = scnEditor.instance;
-                if (editor == null)
-                    return;
-                Transform popup = popupRoot.transform;
-                Canvas canvas = popup.GetComponentInParent<Canvas>();
-                if (canvas == null)
-                    return;
-                Transform top = TopAncestorUnder(popup, canvas.transform);
-                if (top == null)
-                    return;                                     // 弹窗根不在这个 Canvas 下（理论上不会）
-                int topIndex = top.GetSiblingIndex();
-                bool behind = IsBehind(popup, editor.levelEventsPanel != null ? editor.levelEventsPanel.transform : null, canvas.transform)
-                    || IsBehind(popup, editor.settingsPanel != null ? editor.settingsPanel.transform : null, canvas.transform);
-                if (!behind)
-                    return;
-                top.SetAsLastSibling();
-                string message = "分页器叠放层级：弹窗根被排在一个原生 InspectorPanel 之前，已把最上层祖先 \""
-                    + top.name + "\"（原下标 " + topIndex + "/" + (top.parent != null ? top.parent.childCount : 0)
-                    + "）抬到同一 Canvas 的最后，避免 AEE 标签条被原生面板页签盖住";
-                if (!string.Equals(message, stackingFixLogged, StringComparison.Ordinal))
-                {
-                    stackingFixLogged = message;
-                    Main.Logger?.Log(message);
-                }
-            }
-            catch (Exception e)
-            {
-                if (!stackingProblemLogged)
-                {
-                    stackingProblemLogged = true;
-                    Main.Logger?.Log("分页器叠放层级自检失败（已吞掉，不再重试）: " + e.GetType().Name + ": " + e.Message);
-                }
-            }
-        }
-
-        /// <summary>两条链（Canvas 的孩子 → 目标）第一个分叉处，我们是不是排在对方前面。不在同一 Canvas 下返回 false。</summary>
-        private static bool IsBehind(Transform popup, Transform other, Transform canvas)
-        {
-            if (popup == null || other == null || canvas == null)
-                return false;
-            List<Transform> mine = ChainUnderCanvas(popup, canvas);
-            List<Transform> theirs = ChainUnderCanvas(other, canvas);
-            if (mine == null || theirs == null)
-            {
-                if (!stackingProblemLogged)
-                {
-                    stackingProblemLogged = true;
-                    Main.Logger?.Log("分页器叠放层级：弹窗根与原生面板不在同一个 Canvas 的同一棵子树下，兄弟顺序改不了"
-                        + "（弹窗所在 Canvas=id " + canvas.GetInstanceID()
-                        + "；弹窗链=" + (mine == null ? "不在该 Canvas 下" : "在")
-                        + "，原生面板链=" + (theirs == null ? "不在该 Canvas 下" : "在")
-                        + " ⇒ 这两者若分属两个同名 rootCanvas，就说明问题不在兄弟顺序、而在 Canvas 排序");
-                }
-                return false;
-            }
-            int count = Math.Min(mine.Count, theirs.Count);
-            for (int i = 0; i < count; i++)
-            {
-                if (ReferenceEquals(mine[i], theirs[i]))
-                    continue;
-                if (!ReferenceEquals(mine[i].parent, theirs[i].parent))
-                    return false;                            // 结构不同（理论上不会）：不动
-                return mine[i].GetSiblingIndex() < theirs[i].GetSiblingIndex();
-            }
-            return false;                                    // 同一条链（或一条是另一条的前缀）：兄弟顺序管不着
-        }
-
-        /// <summary>弹窗根在 Canvas 之下最上层的那一级（= 能动的最外层容器）。</summary>
-        private static Transform TopAncestorUnder(Transform target, Transform canvas)
-        {
-            List<Transform> chain = ChainUnderCanvas(target, canvas);
-            return chain != null && chain.Count > 0 ? chain[0] : null;
-        }
-
-        /// <summary>从 Canvas 的**孩子**开始往下到目标的链（不含 Canvas）；目标不在该 Canvas 之下返回 null。</summary>
-        private static List<Transform> ChainUnderCanvas(Transform target, Transform canvas)
-        {
-            if (target == null || canvas == null)
-                return null;
-            var chain = new List<Transform>();
-            for (Transform t = target; t != null; t = t.parent)
-            {
-                if (ReferenceEquals(t, canvas))
-                {
-                    chain.Reverse();
-                    return chain;
-                }
-                chain.Add(t);
-            }
-            return null;                                     // 走到根都没碰上这个 Canvas
-        }
-
-        // ------------------------------------------------------------------ 一次性层级诊断
-
-        /// <summary>
-        /// 弹窗第一次显示、标签条建好之后打诊断（<see cref="layoutDiagnosticsLogged"/> 防重复）：
-        ///  · 弹窗根所属 Canvas（及其 rootCanvas）与两个原生 <see cref="InspectorPanel"/> 的 <c>tabs</c> 所属 Canvas；
-        ///  · **弹窗根 / 两个原生面板各自"Canvas → 自身"的兄弟下标路径**（同一 Canvas 下谁在上面就看这个）；
-        ///  · 原生第一枚页签与 AEE 第一枚页签各自的子物体结构（名称 / Image 贴图名 / 颜色 / 是否吃射线），
-        ///    以及弹窗根自己的直接子物体顺序（"外框 / 顶盖 / 挡板 / 标签条"谁先谁后）；
-        ///  · <see cref="PagerTabStrip"/> 探到的原生外观。
-        /// 真机上"页签被原生页签盖住 / 按钮外框看不见"要看的正是这几项 —— 一次打全，省得来回猜。
-        /// 整段兜异常：诊断本身绝不允许把开窗流程带崩，异常也只记一次。
-        /// </summary>
-        private static void LogLayoutDiagnostics()
-        {
-            if (layoutDiagnosticsLogged)
-                return;
-            try
-            {
-                scnEditor editor = scnEditor.instance;
-                Canvas popupCanvas = popupRoot != null ? popupRoot.GetComponentInParent<Canvas>() : null;
-                InspectorPanel events = editor != null ? editor.levelEventsPanel : null;
-                InspectorPanel settings = editor != null ? editor.settingsPanel : null;
-                Main.Logger?.Log("分页器标签条诊断（本次运行只打这一条）："
-                    + "弹窗 Canvas=" + DescribeCanvas(popupCanvas)
-                    + "；原生事件面板 " + DescribePanelTabs(events, "levelEventsPanel")
-                    + "；原生设置面板 " + DescribePanelTabs(settings, "settingsPanel")
-                    + "；标签条=" + (tabStrip != null ? tabStrip.Diagnostics() : "标签条组件不存在"));
-                Main.Logger?.Log("分页器标签条诊断·兄弟路径（Canvas" + (popupCanvas != null ? "(id=" + popupCanvas.GetInstanceID() + ")" : "")
-                    + " → 自身，每级 名字[下标/兄弟数]）："
-                    + "弹窗根=" + DescribeSiblingPath(popupRoot != null ? popupRoot.transform : null, popupCanvas)
-                    + "；levelEventsPanel=" + DescribeSiblingPath(events != null ? events.transform : null, popupCanvas)
-                    + "；settingsPanel=" + DescribeSiblingPath(settings != null ? settings.transform : null, popupCanvas)
-                    + "；levelEventsPanel.tabs=" + DescribeSiblingPath(events != null && events.tabs != null ? events.tabs : null, popupCanvas)
-                    + "；aee_pagerTabStrip=" + DescribeSiblingPath(tabStrip != null ? tabStrip.transform : null, popupCanvas));
-                Transform nativeTab = FirstNativeTab(events) != null ? FirstNativeTab(events) : FirstNativeTab(settings);
-                Transform stripTab = FirstStripTab();
-                Main.Logger?.Log("分页器标签条诊断·结构："
-                    + "弹窗根直接子物体=" + DescribeChildren(popupRoot != null ? popupRoot.transform : null)
-                    + "；弹窗根世界矩形=" + DescribeWorldRect(popupRoot != null ? popupRoot.transform : null)
-                    + "；原生第一枚页签=" + DescribeVisualTree(nativeTab, 3, 14) + " 世界矩形=" + DescribeWorldRect(nativeTab)
-                    + "；AEE 第一枚页签=" + DescribeVisualTree(stripTab, 3, 14) + " 世界矩形=" + DescribeWorldRect(stripTab)
-                    + "；标签条根世界矩形=" + DescribeWorldRect(tabStrip != null ? tabStrip.transform : null)
-                    // 头部入口按钮也报一次：真机截图上那个"汉堡图标"到底是标签条里的 All 页签，还是挂在原生面板头部
-                    // 的这个按钮（它自己 SetAsLastSibling 在原生面板内部，天然画在原生页签之上），靠这一项就能分开
-                    + "；AEE 头部入口按钮=" + PagerEntryButton.DescribeForDiagnostics());
-                layoutDiagnosticsLogged = true;
-            }
-            catch (Exception e)
-            {
-                if (!layoutDiagnosticsErrorLogged)
-                {
-                    layoutDiagnosticsErrorLogged = true;
-                    Main.Logger?.Log("分页器标签条诊断输出失败（已吞掉，不再重试）: " + e.GetType().Name + ": " + e.Message);
-                }
-            }
-        }
-
-        /// <summary>原生事件面板 <c>tabs</c> 下的第一枚页签（设置面板没有就走设置面板；都没有返回 null）。</summary>
-        private static Transform FirstNativeTab(InspectorPanel panel)
-        {
-            if (panel == null || panel.tabs == null || panel.tabs.childCount == 0)
-                return null;
-            return panel.tabs.GetChild(0);
-        }
-
-        /// <summary>标签条根下的第一枚页签（页签还没建出来时返回标签条根自己）。</summary>
-        private static Transform FirstStripTab()
-        {
-            if (tabStrip == null)
-                return null;
-            Transform root = tabStrip.transform;
-            return root.childCount > 0 ? root.GetChild(0) : root;
-        }
-
-        /// <summary>"Canvas → 目标"的兄弟下标路径：每级写 名字[下标/兄弟数]。目标不在该 Canvas 下时如实说明。</summary>
-        private static string DescribeSiblingPath(Transform target, Canvas canvas)
-        {
-            if (target == null)
-                return "无";
-            if (canvas == null)
-                return "查不到 Canvas";
-            List<Transform> chain = ChainUnderCanvas(target, canvas.transform);
-            if (chain == null)
-                return "不在该 Canvas 下（自身=\"" + target.name + "\" 下标 " + target.GetSiblingIndex() + "）";
-            var sb = new StringBuilder();
-            for (int i = 0; i < chain.Count; i++)
-            {
-                if (sb.Length > 0)
-                    sb.Append(" > ");
-                Transform t = chain[i];
-                sb.Append(t.name).Append('[').Append(t.GetSiblingIndex()).Append('/')
-                    .Append(t.parent != null ? t.parent.childCount : 0).Append(']');
-            }
-            return sb.Length > 0 ? sb.ToString() : "（就是 Canvas 自己）";
-        }
-
-        /// <summary>一层直接子物体的名字（按绘制顺序）。</summary>
-        private static string DescribeChildren(Transform parent)
-        {
-            if (parent == null)
-                return "无";
-            var sb = new StringBuilder();
-            for (int i = 0; i < parent.childCount && i < 12; i++)
-            {
-                if (sb.Length > 0)
-                    sb.Append(", ");
-                sb.Append(parent.GetChild(i).name);
-            }
-            if (parent.childCount > 12)
-                sb.Append(", …共 ").Append(parent.childCount);
-            return "[" + sb + "]";
-        }
-
-        /// <summary>
-        /// 一棵子树的紧凑结构：<c>名字(Image:贴图名/颜色/吃射线)[下标]</c>，最多 <paramref name="maxNodes"/> 个节点、
-        /// <paramref name="maxDepth"/> 层。用来对比"原生页签 vs AEE 页签"的层数与配色，判断有没有少一层填充底。
-        /// </summary>
-        private static string DescribeVisualTree(Transform root, int maxDepth, int maxNodes)
-        {
-            if (root == null)
-                return "无";
-            var sb = new StringBuilder();
-            int budget = maxNodes;
-            AppendVisualTree(root, 0, maxDepth, ref budget, sb);
-            return sb.ToString();
-        }
-
-        private static void AppendVisualTree(Transform node, int depth, int maxDepth, ref int budget, StringBuilder sb)
-        {
-            if (node == null || budget <= 0)
-                return;
-            budget--;
-            if (sb.Length > 0)
-                sb.Append(" | ");
-            sb.Append(new string(' ', depth * 2)).Append(node.name).Append('[').Append(node.GetSiblingIndex()).Append(']');
-            Image image = node.GetComponent<Image>();
-            if (image != null)
-            {
-                sb.Append("(Image sprite=").Append(image.sprite != null ? image.sprite.name : "null")
-                    .Append(" type=").Append(image.type)
-                    .Append(" color=").Append(DescribeColor(image.color))
-                    .Append(" raycast=").Append(image.raycastTarget)
-                    .Append(" enabled=").Append(image.enabled).Append(')');
-            }
-            TMP_Text text = node.GetComponent<TMP_Text>();
-            if (text != null)
-                sb.Append("(TMP color=").Append(DescribeColor(text.color)).Append(" raycast=").Append(text.raycastTarget).Append(')');
-            if (depth >= maxDepth)
-                return;
-            for (int i = 0; i < node.childCount; i++)
-                AppendVisualTree(node.GetChild(i), depth + 1, maxDepth, ref budget, sb);
-        }
-
-        /// <summary>颜色写成 r,g,b,a（0..1，两位小数），日志里一眼能看出"半透明描边"还是"不透明填充"。</summary>
-        private static string DescribeColor(Color color)
-        {
-            return string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                "{0:0.##},{1:0.##},{2:0.##},{3:0.##}", color.r, color.g, color.b, color.a);
-        }
-
-        /// <summary>UI 元素的世界矩形（xMin,yMin..xMax,yMax，两位小数）：用来判断"两枚页签在屏幕上到底重不重叠、重叠多少"。
-        /// internal：<see cref="PagerEntryButton.DescribeForDiagnostics"/> 也要用它（同一次诊断里对比"标签条里的页签"与"原生面板上的入口按钮"）。</summary>
-        internal static string DescribeWorldRect(Transform target)
-        {
-            if (target == null)
-                return "无";
-            RectTransform rect = target as RectTransform;
-            if (rect == null)
-                return "（不是 RectTransform）";
-            Vector3 min = rect.TransformPoint(new Vector3(rect.rect.xMin, rect.rect.yMin, 0f));
-            Vector3 max = rect.TransformPoint(new Vector3(rect.rect.xMax, rect.rect.yMax, 0f));
-            return string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                "({0:0.#},{1:0.#})..({2:0.#},{3:0.#}) size {4:0.#}×{5:0.#}",
-                Mathf.Min(min.x, max.x), Mathf.Min(min.y, max.y),
-                Mathf.Max(min.x, max.x), Mathf.Max(min.y, max.y),
-                rect.rect.width, rect.rect.height);
-        }
-
-        /// <summary>原生面板的页签容器所在的 Canvas 一句话（面板/容器缺失时说明是哪一级缺的，不抛异常）。</summary>
-        private static string DescribePanelTabs(InspectorPanel panel, string label)
-        {
-            try
-            {
-                if (panel == null)
-                    return label + "=面板不存在";
-                RectTransform tabsRect = panel.tabs;
-                if (tabsRect == null)
-                    return label + "=tabs 容器为空";
-                return label + "（tabs " + tabsRect.childCount + " 枚）="
-                    + DescribeCanvas(tabsRect.GetComponentInParent<Canvas>());
-            }
-            catch (Exception e)
-            {
-                return label + "=读取失败: " + e.Message;
-            }
-        }
-
-        /// <summary>一个 Canvas 及其 <c>rootCanvas</c> 的 renderMode / overrideSorting / sortingOrder / sortingLayerName。</summary>
-        private static string DescribeCanvas(Canvas canvas)
-        {
-            if (canvas == null)
-                return "无（找不到 Canvas）";
-            string self;
-            try { self = DescribeCanvasSelf(canvas); }
-            catch (Exception e) { return "读取失败: " + e.Message; }
-            Canvas root;
-            try { root = canvas.rootCanvas; }
-            catch (Exception e) { return self + "；rootCanvas 读取失败: " + e.Message; }
-            if (root == null || root == canvas)
-                return self + "；它自己就是 rootCanvas";
-            try { return self + "；rootCanvas=" + DescribeCanvasSelf(root); }
-            catch (Exception e) { return self + "；rootCanvas 读取失败: " + e.Message; }
-        }
-
-        private static string DescribeCanvasSelf(Canvas canvas)
-        {
-            // 带上 instanceID：诊断里两个 Canvas 名字相同（都叫 levelEditorScene）时，只有它能证明"是不是同一个 Canvas"
-            return "\"" + canvas.gameObject.name + "\"(id=" + canvas.GetInstanceID() + ")"
-                + " renderMode=" + canvas.renderMode
-                + " overrideSorting=" + canvas.overrideSorting
-                + " sortingOrder=" + canvas.sortingOrder
-                + " sortingLayer=\"" + canvas.sortingLayerName + "\"";
-        }
-
         /// <summary>
         /// 把"标签条要多高"写进窗口几何（最小高度的一项，见 <see cref="PagerWindowInteraction.MinStripHeight"/>；
         /// §47 标签条整条在窗口外，上下还各占 <c>TopInset + BottomInset</c> 的内缩，那两段由窗口几何自己加）。
@@ -1724,8 +1378,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
             ResizeHost(rowCount);
             LayoutList();
             isOpen = true;
-            EnsureAboveNativePanels();   // 开窗这一刻就校一次：显示期间另有约 0.5s 一次的低频自检（PagerWindowInteraction）
-            LogLayoutDiagnostics();      // 窗口已显示、ResizeHost→SyncTabStrip 也已把页签建好：此刻的层级就是真机看到的那一套
             pendingOpenTab = null;
             RefreshEntryButton(false);   // §47 开窗后重刷头部入口（亮底已取消，这里只校可见性与对齐）
 
@@ -2329,8 +1981,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
             resolvedMarkFont = null;
             headerMarksFellBack = false;
             headerMarkDetectErrorLogged = false;
-            stackingFixLogged = null;
-            stackingProblemLogged = false;
         }
 
         // ------------------------------------------------------------------ 列表内容
@@ -6825,8 +6475,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
             popupRect.anchoredPosition = Vector2.zero;
             popupRect.localScale = Vector3.one;
             // 放到最后：盖住 popupPanel 的全屏遮罩，点击也优先落在弹窗上。
-            // 叠放层级自检不在这里做：此刻 isOpen 还是 false（OpenCore 收尾才置位），
-            // 真正那一次在 OpenCore 里紧跟 isOpen = true，之后由 PagerWindowInteraction.LateUpdate 低频复查。
             popupRoot.transform.SetAsLastSibling();
 
             LayoutList();
