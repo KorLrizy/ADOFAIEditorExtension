@@ -42,6 +42,17 @@ The mod registers a visible String property `aeeNote` for every **event type**, 
 Notes are written into the `.adofai` file and displayed on the **right** of each event row in the pager jump list (truncated if long); **hovering** a row shows the full note.
 Empty notes are not written to disk (empty `aeeNote` values are stripped before saving), so the file never gains a pile of empty strings.
 
+### Metadata sidecar backup (new in 1.3.0)
+
+Every time you save a level, the mod also snapshots **event notes** and **manual group assignments** (decorations and events) into a sidecar file next to the level: `<level path>.aee.json` (e.g. `level.adofai` → `level.adofai.aee.json`). It is restored automatically when the level is loaded.
+
+- **What it is for**: notes and assignments live in extra event keys, and a single save with the vanilla editor (no mod) can drop them. With the sidecar they are matched back to the right events by content, even if the level was edited by the vanilla editor or another tool in between.
+- **How matching works**: three passes, each looser than the last — (1) the whole event matches exactly; (2) with the tile index ignored, so tiles added or deleted (which shift every event) do not break it; (3) the same "tile | event type", so an event whose parameters changed is still recognised. Assignments map to the current group table by group **name + tag**; entries that cannot be mapped are skipped individually and do not affect the others.
+- **Partial restores are reported**: after loading, one message tells you how many entries could not be restored and how many were; details go to the UMM log, and the same message is shown only once.
+- **Old backups are never silently overwritten**: a sidecar this process could not fully restore, or never read, is first archived as `<level path>.aee.unrestored-<time>.json` (same-second collisions get `-2`, `-3`, …) on the next save, and only then replaced. If writing the sidecar fails, the file on disk is left byte-for-byte untouched.
+- **When no file is created**: nothing is written when this save has neither notes nor assignments and no old sidecar exists; levels whose path does not end in `.adofai` are not involved at all.
+- The sidecar is only a backup and does not change the level file itself: deleting it breaks nothing, you just lose this restore layer.
+
 ### Mod settings page
 
 The mod adds a UI tab of its own (placed among the editor's vanilla tabs) to toggle the features above, choose the default grouping mode, and manage the two independent sets of custom groups (decorations and events). Internally the mod disguises itself as a "settings-type level event" injected into the game's native settings panel, with field values stored in that tab's own `LevelEvent`, so **switching levels within the same process does not lose them**; they are also persisted to `Settings.json` in the mod folder, so they **survive a game restart**.
@@ -58,7 +69,7 @@ Settings include: the decoration-grouping master switch, grouping mode, whether 
 
 **Option 1: Release zip (recommended)**
 
-1. Download `ADOFAIEditorExtension_v1.2.0_game-v3.3.1.zip` from this repository's **Releases** page
+1. Download `ADOFAIEditorExtension_v1.3.0_game-v3.3.1.zip` from this repository's **Releases** page
    (the `..._game-v2.9.8.zip` in the same release is for game v2.9.8 — **don't grab the wrong one**).
 2. In the game, open Unity Mod Manager → **Mod** → **Install mod** → pick the zip.
 3. Launch the game; "ADOFAI Editor Extension" appears in UMM's mod list — tick it to enable.
@@ -147,7 +158,7 @@ ADOFAI Editor extension\
 │   └── PagerListPatches.cs        Harmony patch set (InspectorTab.Init / close on selection and panel changes / popup shortcuts)
 ├── Features\Notes\
 │   └── EventNote.cs               Event notes (aeeNote property registration + an Encode postfix patch that keeps empty notes off disk)
-├── Properties\AssemblyInfo.cs     Assembly info and version (1.2.0.0)
+├── Properties\AssemblyInfo.cs     Assembly info and version (1.3.0.0)
 ├── LICENSE                        MIT
 └── README.md
 ```

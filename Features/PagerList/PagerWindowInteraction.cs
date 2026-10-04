@@ -17,6 +17,7 @@ namespace ADOFAIEditorExtension.Features.PagerList
         private const int MinAutoRows = 6;
         private const int MaxAutoRows = 14;
         private const float ResizeBand = 6f;
+        private const float LeftResizeInner = 12f;      // §47 左缩放手柄的内边界（< 列表左内边距 16，不抢行点击）
         private const float CornerSize = 14f;
         private const float SafeScreenPixels = 6f;
         private const float SnapEnterPixels = 16f;
@@ -51,7 +52,52 @@ namespace ADOFAIEditorExtension.Features.PagerList
             nativeFeedback = PagerNativeResizeFeedback.Create(root);
         }
 
-        private float MinimumHeight => headerHeight + footerHeight + 2f * paddingY + 2f * rowHeight + spacing + 6f;
+        /// <summary>
+        /// §47 左侧标签条要占的净高（页签按最小间距极限重叠后仍摆得下的高度，**不含**上下内缩那两段）。
+        /// 由 <see cref="PagerListController"/> 在标签页表变化时写进来，0 = 没有标签条。
+        /// </summary>
+        internal float MinStripHeight { get; set; }
+
+        /// <summary>
+        /// §47 交互层记住的行数（Configure 的入参，也是 StripHeightChanged / 拖完 / 失焦后重算用的那个）。
+        /// 控制器在"自动尺寸"下必须按 All 页行数喂它，切换设置开关时也可以反过来把它换算成新口径再重算。
+        /// </summary>
+        internal int TrackedRows
+        {
+            get { return rowCount; }
+            set { rowCount = Math.Max(1, value); }
+        }
+
+        /// <summary>
+        /// 最小高度：除原来的"标题 + 页脚 + 两行列表"之外，还要装得下标签条。
+        /// §47 标签条整条在窗口**外面**、纵向只跨 (窗口高 − TopInset − BottomInset)，所以标签条那一项是
+        /// <c>TopInset + BottomInset + MinStripHeight</c>；两条取大 ⇒ 页签变多时窗口不许再往矮里缩，
+        /// 而且拖动 / Configure / LateUpdate 的夹取都走这一个属性。
+        /// </summary>
+        private float MinimumHeight => Mathf.Max(
+            headerHeight + footerHeight + 2f * paddingY + 2f * rowHeight + spacing + 6f,
+            PagerTabStrip.TopInset + PagerTabStrip.BottomInset + MinStripHeight);
+
+        /// <summary>
+        /// §47 标签条探出窗口左沿的量：夹屏幕边界时**左边**要按它留出余量，
+        /// 否则窗口贴到屏幕最左时整条标签条出屏（只在 <see cref="TryGetBounds"/> 一处加，
+        /// Configure / 拖动 / 缩放 / 贴边 / LateUpdate 全都从那份 bounds 出发，自然一起生效）。
+        /// 标签条已经不在窗口里 ⇒ 不再吃列表宽度，最小/默认宽就是普通值。
+        /// </summary>
+        private static float StripLeftReserve => PagerTabStrip.LeftReserve;
+
+        /// <summary>
+        /// 标签条变高之后重跑一次几何：**只在当前高度已经不够**时才动窗口（一次性调用，不每帧）。
+        /// 没摆过位置不动（第一次 Configure 自然带上新的最小值）；拖拽中不动（EndDrag 会再 Configure 一次）。
+        /// </summary>
+        internal void StripHeightChanged()
+        {
+            if (host == null || !positioned || dragging)
+                return;
+            if (ReadRect().Height >= MinimumHeight - 0.5f)
+                return;
+            Configure(rowCount);
+        }
 
         private void BuildHandles()
         {
@@ -68,7 +114,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 WindowEdges.Right | WindowEdges.Bottom,
                 WindowEdges.Right | WindowEdges.Top
             };
-            resizeHandles[0] = CreateHandle("aee_pagerResizeLeft", edges[0], Vector2.zero, new Vector2(0f, 1f), new Vector2(-ResizeBand, CornerSize), new Vector2(ResizeBand, -CornerSize));
+            // §47 左边那一条整段搬进窗口内：标签条现在贴在窗口左沿**外侧**（右沿只压进来 BorderOverlap），
+            // 而把手是标签条之后建的（同级靠后 = 画在上、也先命中），留在外面就会把页签的点击抢走。
+            // 内边界取 LeftResizeInner = 12 < 列表左内边距 16 ⇒ 既不抢页签，也不抢事件行。
+            resizeHandles[0] = CreateHandle("aee_pagerResizeLeft", edges[0], Vector2.zero, new Vector2(0f, 1f), new Vector2(PagerTabStrip.BorderOverlap, CornerSize), new Vector2(LeftResizeInner, -CornerSize));
             resizeHandles[1] = CreateHandle("aee_pagerResizeRight", edges[1], new Vector2(1f, 0f), Vector2.one, new Vector2(-ResizeBand, CornerSize), new Vector2(ResizeBand, -CornerSize));
             resizeHandles[2] = CreateHandle("aee_pagerResizeBottom", edges[2], Vector2.zero, new Vector2(1f, 0f), new Vector2(CornerSize, -ResizeBand), new Vector2(-CornerSize, ResizeBand));
             resizeHandles[3] = CreateHandle("aee_pagerResizeTop", edges[3], new Vector2(0f, 1f), Vector2.one, new Vector2(CornerSize, -ResizeBand), new Vector2(-CornerSize, ResizeBand));
@@ -185,6 +234,24 @@ namespace ADOFAIEditorExtension.Features.PagerList
             Configure(rowCount);
         }
 
+        /// <summary>
+        /// 自动尺寸开关切换 ⇒ 位置重新初始化到屏幕中心（记住的宽高不动）。
+        /// 顺序要紧：FinishDrag 会把在拖的几何写回位置偏好，中心必须写在它之后、Configure 之前。
+        /// </summary>
+        internal void Recenter()
+        {
+            FinishDrag();
+            WriteCenteredPreferences();
+            Configure(rowCount);
+        }
+
+        /// <summary>把位置偏好落回中心、清掉贴边（弹窗没开时也用它，下次 Configure 自然居中）。</summary>
+        internal static void WriteCenteredPreferences()
+        {
+            PagerWindowPreferences.TrySetPosition(0.5f, 0.5f);
+            PagerWindowPreferences.TrySetSnapEdges(0);
+        }
+
         private WindowRect ReadRect()
         {
             RectTransform parent = host.parent as RectTransform;
@@ -234,7 +301,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 return false;
             float margin = SafeScreenPixels * pixelUnits;
             Rect parentArea = parent.rect;
-            float left = Mathf.Max(Mathf.Min(lo.x, hi.x), parentArea.xMin) + margin;
+            // §47 左边多让出标签条探出窗口的那一段（48 − 3 = 45 个单位）：bounds 是 Configure / 拖动 /
+            // 缩放 / 贴边 / LateUpdate 唯一的出发点，所以只在这里加一次就全都生效
+            float left = Mathf.Max(Mathf.Min(lo.x, hi.x), parentArea.xMin) + margin + StripLeftReserve;
             float right = Mathf.Min(Mathf.Max(lo.x, hi.x), parentArea.xMax) - margin;
             float bottom = Mathf.Max(Mathf.Min(lo.y, hi.y), parentArea.yMin) + margin;
             float top = Mathf.Min(Mathf.Max(lo.y, hi.y), parentArea.yMax) - margin;
@@ -354,7 +423,15 @@ namespace ADOFAIEditorExtension.Features.PagerList
             {
                 FinishDrag(); // do not use a stale pointer/size snapshot after resolution/Canvas changes
                 Configure(rowCount);
+                return;
             }
+
+            // §47 最小高度里"标签条那一段"是随页签数变的：只有真的矮到夹不住时才重排一次。
+            // 屏幕本身不够高时按能达到的值比（Constrain 会把最小值夹到 bounds 以内），
+            // 否则这条判断每帧都成立、变成隐形重排。
+            float achievable = Mathf.Min(MinimumHeight, lastBounds.Height);
+            if (!dragging && ReadRect().Height < achievable - 0.5f)
+                Configure(rowCount);
         }
 
         internal void Hover(PagerWindowHandle handle, bool inside, PointerEventData data)

@@ -231,10 +231,15 @@ namespace ADOFAIEditorExtension.Features.PagerList
             if (intent == PagerClipboardIntent.PasteEvents)
             {
                 // 粘贴一律交回原版（它自己会按 clipboard / clipboardContent 的语义处理，
-                // 包括"不覆盖"、多处 FloorData 按砖顺延等）
+                // 包括"不覆盖"、多处 FloorData 按砖顺延等）。
+                // §47 落点：原版 `PasteEvents` 是 `events.Add(CopyEvent(ev, id))` —— 新事件按**对象**追加到
+                // 数组末尾，即贴到那块砖现有事件的最后，与类型、与"当前停在哪一行"都无关。
+                // 这里刻意不去改写落点：自己插一次 = 在原版粘贴作用域之外再动一次 levelData.levelEvents，
+                // PACL2 下要多套一层重排撤销记录（两步撤销），换来的只是行序不同 ⇒ 不值。
                 int clipboardCount = DescribeClipboard(editor, out int clipboardEvents);
                 int targetFloor = ResolveFloorID(editor, PagerListController.SelectedPopupEvents());
                 int before = CountFloorEvents(editor, targetFloor);
+                HashSet<LevelEvent> beforeObjects = SnapshotEventObjects(editor);   // §47 事后按引用认"贴上去的是哪几个"
                 // 原版粘贴收尾会 SelectFloor + ShowTabsForFloor + ShowPanel，那会命中"面板切换就关窗"
                 // 的补丁 ⇒ 先声明这是我们自己触发的，弹窗才不会被顺手关掉（之后 ReloadRows 重建列表）
                 PagerListController.SuppressAutoClose();
@@ -251,6 +256,12 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 // 就会把刚弹的"已粘贴 N"顶掉（左上角只有一条位置，§39 M1）。
                 PagerListController.SuppressExitToastThisFrame();
                 PagerListController.AfterPopupClipboardChange(true, false);
+                // §47 混排剪贴板：原版的 selectAfterward 只把面板切到剪贴板里**第一个**事件的类型上，
+                // 其余类型的事件用户既看不到也选不到 ⇒ 这里改成"选中这次贴上去的全部新事件"，
+                // 并按它们的类型决定停在哪一页（见 SelectEventsAfterPaste）
+                List<LevelEvent> pasted = NewEventObjects(editor, beforeObjects, targetFloor);
+                if (pasted.Count > 0)
+                    PagerListController.SelectEventsAfterPaste(pasted);
                 return;
             }
 
@@ -267,6 +278,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 // 单选：原版的"选中的事件"就是面板里那个事件，与我们列表当前行一致 ⇒ 直接复用原版 action
                 // （剪切的收尾会 ShowTabsForFloor/ShowPanel ⇒ 先压住"面板切换就关窗"）
                 // 提示里的个数与原版实际处理的一致：全部同类 = 当前砖上该类型的事件数（原版 CopyOfFloor 同口径）
+                // §47 这条只在**选中 1 个**时走：那时"我们的当前行"与面板 selectedEvent 必然同型同事件，
+                // 复用才逐字等价；多选（哪怕全是同一类型）都走下面模组自己的路，剪贴板/删除/撤销点都在我们手里。
                 int affected = allSameType ? CollectSameTypeEvents(editor, selected).Count : 1;
                 PagerListController.SuppressAutoClose();
                 Run(editor, action);
@@ -280,6 +293,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
             }
 
             // 多选：剪贴板是我们自己拼的 / 事件是我们自己删的，PACL2 完全感知不到 ⇒ 提示始终由我们弹
+            // §47 `selected` 就是**显示列表顺序**下的全部选中事件（SelectedPopupEvents），可以横跨多个类型：
+            // 复制/剪切都对**全部**选中行生效（一条 FloorData 里混几个类型都行，原版 PasteEvents 逐条 CopyEvent，
+            // 不看类型），删除走的还是那个 PACL2 感知的删除作用域（Pacl2Compat.TryBeginEventsRemovalScope
+            // → 一步撤销还原全部，见 RemoveEvents）。
             List<LevelEvent> toCopy = allSameType ? CollectSameTypeEvents(editor, selected) : selected;
             if (toCopy.Count == 0)
                 return;
@@ -618,23 +635,63 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>
-        /// "复制/剪切全部同类事件"：**当前砖上**该类型的所有事件 —— 与原版 `CopyOfFloor` 的 allSameTypeEvents
-        /// 分支同义（r148 原版：`e.floor == floor.seqID &amp;&amp; e.eventType == selectedEventType`），
+        /// "复制/剪切全部同类事件"：**当前砖上**这些类型的所有事件 —— 与原版 `CopyOfFloor` 的
+        /// allSameTypeEvents 分支同义（r148 原版：`e.floor == floor.seqID &amp;&amp; e.eventType == selectedEventType`），
         /// 不是整关（以前按整关收，多选剪切会把别的砖上的同类事件一起删掉）。
         /// 砖号口径与复制目标一致（<see cref="ResolveFloorID"/>）；取不到砖就返回空表。
         /// </summary>
         private static List<LevelEvent> CollectSameTypeEvents(scnEditor editor, List<LevelEvent> selected)
         {
             var result = new List<LevelEvent>();
-            if (selected == null || selected.Count == 0 || selected[0] == null)
+            if (selected == null || selected.Count == 0)
                 return result;
-            LevelEventType type = selected[0].eventType;
+            // §47 混排标签页里选中集可以横跨多个类型："同类"按**每个选中事件自己的类型**各收一批
+            //（逐型与原版 CopyOfFloor 同口径）。
+            // AllEvents 就是 levelData.levelEvents 的数组顺序 ⇒ 扫一遍天然按顺序、也不会重复收。
+            var types = new HashSet<LevelEventType>();
+            for (int i = 0; i < selected.Count; i++)
+                if (selected[i] != null)
+                    types.Add(selected[i].eventType);
+            if (types.Count == 0)
+                return result;
             int floorID = ResolveFloorID(editor, selected);
             if (floorID < 0)
                 return result;
             foreach (LevelEvent ev in AllEvents(editor))
-                if (ev != null && ev.floor == floorID && ev.eventType == type)
+                if (ev != null && ev.floor == floorID && types.Contains(ev.eventType))
                     result.Add(ev);
+            return result;
+        }
+
+        /// <summary>
+        /// §47 把整张事件表按**引用**拍一份快照（<c>LevelEvent</c> 没重写 Equals ⇒ HashSet 就是引用判等）。
+        /// 粘贴会 `CopyEvent` 造新对象，事后取差集就是"这次真正贴上去的事件"，跨类型也能一次认全。
+        /// </summary>
+        private static HashSet<LevelEvent> SnapshotEventObjects(scnEditor editor)
+        {
+            var set = new HashSet<LevelEvent>();
+            if (editor == null)
+                return set;
+            foreach (LevelEvent ev in AllEvents(editor))
+                if (ev != null)
+                    set.Add(ev);
+            return set;
+        }
+
+        /// <summary>§47 快照之后新增的事件对象（数组顺序；认得目标砖就只收那块砖上的）。</summary>
+        private static List<LevelEvent> NewEventObjects(scnEditor editor, HashSet<LevelEvent> before, int floorID)
+        {
+            var result = new List<LevelEvent>();
+            if (editor == null || before == null)
+                return result;
+            foreach (LevelEvent ev in AllEvents(editor))
+            {
+                if (ev == null || before.Contains(ev))
+                    continue;
+                if (floorID >= 0 && ev.floor != floorID)
+                    continue;
+                result.Add(ev);
+            }
             return result;
         }
 

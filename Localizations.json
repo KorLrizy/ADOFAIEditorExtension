@@ -89,6 +89,42 @@
     "ChineseTraditional": "{0}（共 {1} 個）—— 點擊直接切換",
     "Korean": "{0} ({1}개) - 클릭하여 전환"
   },
+  "aee.pager.title.mixed": {
+    "English": "{0} ({1} events) - click to switch",
+    "ChineseSimplified": "{0}（共 {1} 个事件）—— 点击直接切换",
+    "ChineseTraditional": "{0}（共 {1} 個事件）—— 點擊直接切換",
+    "Korean": "{0} (이벤트 {1}개) - 클릭하여 전환"
+  },
+  "aee.pager.tab.all": {
+    "English": "All events on this tile",
+    "ChineseSimplified": "此方块上的全部事件",
+    "ChineseTraditional": "此方塊上的全部事件",
+    "Korean": "이 타일의 모든 이벤트"
+  },
+  "aee.pager.tab.custom": {
+    "English": "Custom groups",
+    "ChineseSimplified": "自定义分组",
+    "ChineseTraditional": "自訂分組",
+    "Korean": "사용자 그룹"
+  },
+  "aee.pager.tab.allShort": {
+    "English": "All",
+    "ChineseSimplified": "全部",
+    "ChineseTraditional": "全部",
+    "Korean": "전체"
+  },
+  "aee.pager.mixedSelection": {
+    "English": "{0} events of different types selected: only drag, delete and copy apply",
+    "ChineseSimplified": "已选择 {0} 个不同类型的事件：只能拖动、删除、复制",
+    "ChineseTraditional": "已選擇 {0} 個不同類型的事件：只能拖動、刪除、複製",
+    "Korean": "서로 다른 유형의 이벤트 {0}개 선택됨: 드래그, 삭제, 복사만 가능"
+  },
+  "aee.pager.tab.tip": {
+    "English": "{0} ({1})",
+    "ChineseSimplified": "{0}（{1}）",
+    "ChineseTraditional": "{0}（{1}）",
+    "Korean": "{0} ({1})"
+  },
   "aee.pager.current": {
     "English": ">",
     "ChineseSimplified": ">",
@@ -252,10 +288,10 @@
     "Korean": "각 그룹에 장식이 몇 개 들어 있는지 표시합니다."
   },
   "editor.pagerListEnabled.help": {
-    "English": "Click the pager text to open a jump list.",
-    "ChineseSimplified": "点击分页器文本弹出直选列表。",
-    "ChineseTraditional": "點擊分頁器文字彈出直選清單。",
-    "Korean": "페이지 표시를 클릭하면 바로 선택하는 목록이 열립니다."
+    "English": "Click the pager text to open a jump list. While that popup is open, ctrl-shift-up moves the selected event(s) to the top of the list shown in the current tab, ctrl-shift-down to the bottom.",
+    "ChineseSimplified": "点击分页器文本弹出直选列表。弹窗开着时，ctrl-shift-↑ 把选中的事件移到当前标签页列表的最前，ctrl-shift-↓ 移到最后。",
+    "ChineseTraditional": "點擊分頁器文字彈出直選清單。彈窗開啟時，ctrl-shift-↑ 把選取的事件移到目前標籤頁清單的最前，ctrl-shift-↓ 移到最後。",
+    "Korean": "페이지 표시를 클릭하면 바로 선택 목록이 열립니다. 이 창이 열려 있는 동안 ctrl-shift-↑를 누르면 선택한 이벤트가 현재 탭 목록의 맨 위로, ctrl-shift-↓를 누르면 맨 아래로 이동합니다."
   },
   "editor.addGroup.help": {
     "English": "Add a custom group. With a match tag, decorations with that exact tag go here first. With an empty tag, the first such group collects everything else, and any further one starts empty - drag decorations into it.",
@@ -328,6 +364,18 @@
     "ChineseSimplified": "把分组归属写进关卡文件",
     "ChineseTraditional": "把分組歸屬寫進關卡檔案",
     "Korean": "그룹 소속을 레벨 파일에 기록"
+  },
+  "aee.metadata.partial": {
+    "English": "{0} event notes or group assignments could not be restored ({1} restored). The matching events were probably changed or deleted without this mod, or the groups were renamed or removed.\nThe old backup will not be overwritten: it is kept as a .aee.unrestored-<time>.json file the next time you save.",
+    "ChineseSimplified": "有 {0} 条事件备注或分组归属没能恢复（已恢复 {1} 条），可能是对应的事件在没装本模组时被改动或删除了，或者分组被改名、删除了。\n旧备份不会被覆盖：下次保存时会另存为 .aee.unrestored-<时间>.json 文件。",
+    "ChineseTraditional": "有 {0} 條事件備註或分組歸屬沒能還原（已還原 {1} 條），可能是對應的事件在沒裝本模組時被改動或刪除了，或者分組被改名、刪除了。\n舊備份不會被覆寫：下次儲存時會另存為 .aee.unrestored-<時間>.json 檔案。",
+    "Korean": "이벤트 메모 또는 그룹 지정 {0}개를 복원하지 못했습니다({1}개 복원됨). 이 모드 없이 해당 이벤트를 수정·삭제했거나 그룹 이름을 바꾸거나 삭제했을 수 있습니다.\n이전 백업은 덮어쓰지 않으며, 다음에 저장할 때 .aee.unrestored-<시간>.json 파일로 따로 보관됩니다."
+  },
+  "aee.metadata.unreadable": {
+    "English": "The metadata backup {0} could not be used, so no event notes or group assignments were restored (see the mod log for details).\nThe old backup will not be overwritten: it is kept as a .aee.unrestored-<time>.json file the next time you save.",
+    "ChineseSimplified": "元数据备份 {0} 无法使用，这次没有恢复任何事件备注或分组归属（原因见模组日志）。\n旧备份不会被覆盖：下次保存时会另存为 .aee.unrestored-<时间>.json 文件。",
+    "ChineseTraditional": "中繼資料備份 {0} 無法使用，這次沒有還原任何事件備註或分組歸屬（原因見模組日誌）。\n舊備份不會被覆寫：下次儲存時會另存為 .aee.unrestored-<時間>.json 檔案。",
+    "Korean": "메타데이터 백업 {0}을(를) 사용할 수 없어 이벤트 메모와 그룹 지정을 복원하지 못했습니다(자세한 내용은 모드 로그 참고).\n이전 백업은 덮어쓰지 않으며, 다음에 저장할 때 .aee.unrestored-<시간>.json 파일로 따로 보관됩니다."
   },
   "editor.eventGroupEditing.help": {
     "English": "Switch which custom-group list the rows below edit: decoration groups or event (pager) groups. The two lists are independent.",

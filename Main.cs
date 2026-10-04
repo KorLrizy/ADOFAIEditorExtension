@@ -96,7 +96,7 @@ namespace ADOFAIEditorExtension
 
             Aee = new CustomTab
             {
-                // 图标在注入时从 GCS.levelEventIcons 里取原版图标（AddDecoration），不额外带图片资源
+                // 图标在注入时由原版 AddDecoration 图标加角标生成（见 ResolveTabIcon），不额外带图片资源
                 icon = null,
                 type = ModEventType,
                 name = ModEventName,
@@ -281,14 +281,14 @@ namespace ADOFAIEditorExtension
         }
 
         /// <summary>原版 <c>scnEditor.showingPopup</c>（private 字段，反射读；读不到按"没有弹窗"处理）。</summary>
-        private static bool IsShowingPopup(scnEditor editor)
+        internal static bool IsShowingPopup(scnEditor editor)
         {
             try { return editor.Get("showingPopup") is bool showing && showing; }
             catch { return false; }
         }
 
         /// <summary>原版 <c>scnEditor.popupIsAnimating</c>：为 true 时 ShowPopup(true, …) 直接 return。</summary>
-        private static bool IsPopupAnimating(scnEditor editor)
+        internal static bool IsPopupAnimating(scnEditor editor)
         {
             try { return editor.Get("popupIsAnimating") is bool animating && animating; }
             catch { return false; }
@@ -372,6 +372,7 @@ namespace ADOFAIEditorExtension
                 return null;
             AeeLevelEvent = new LevelEvent(0, (LevelEventType)ModEventType, info);
             Settings.SettingsStore.Load();
+            lastPagerAutoWindowSize = PagerAutoWindowSize;
             return AeeLevelEvent;
         }
 
@@ -411,6 +412,7 @@ namespace ADOFAIEditorExtension
         /// 同时也是面板上「窗口放大倍率」那一行的启用条件（原版 enableIf 机制，见 PrefabProperties）。
         /// </summary>
         internal static bool PagerAutoWindowSize => GetBoolSetting(KeyPagerAutoWindowSize, true);
+        private static bool lastPagerAutoWindowSize = true;
 
         /// <summary>
         /// 用鼠标拖动标题区域移动窗口时，是否吸附到屏幕的四边/四角（缺省 **false**）。
@@ -695,6 +697,13 @@ namespace ADOFAIEditorExtension
                 // 重算一次几何并落盘。倍率行的置灰**不靠**这里，靠 PrefabProperties 里的 disableIf 元数据。
                 if (key == KeyPagerAutoWindowSize || key == KeyPagerWindowScale || key == KeyPagerWindowSnap)
                 {
+                    // 自动尺寸开关真的翻了才归位：位置重新初始化到屏幕中心（只动位置，记住的宽高不动）。
+                    // 原版回调给的 oldValue 恒为 null，点已选中的那一档也会进来，所以拿上次的值比
+                    if (key == KeyPagerAutoWindowSize && PagerAutoWindowSize != lastPagerAutoWindowSize)
+                    {
+                        lastPagerAutoWindowSize = PagerAutoWindowSize;
+                        PagerListController.RecenterWindow();
+                    }
                     PagerListController.OnWindowSettingsChanged();
                     // 兜底重算一次所有行的启用状态（正常路径原版已经算过，见 PrefabProperties 的说明）
                     PrefabProperties.ReapplyWindowRowEnabled();
@@ -770,9 +779,13 @@ namespace ADOFAIEditorExtension
                     missingNames.Count, propertiesToActive.Count, content.childCount, string.Join(", ", missingNames)));
         }
 
-        /// <summary>标签页图标：直接复用游戏原版图标（AddDecoration），不引入自己的图片资源。</summary>
+        private static Sprite tabIcon;
+
+        /// <summary>标签页图标：原版 AddDecoration 图标右上角加一个白色加号（运行时生成，不引入图片资源）；生成失败时退回原版图标。</summary>
         internal static Sprite ResolveTabIcon()
         {
+            if (tabIcon != null)
+                return tabIcon;
             Sprite sprite = null;
             if (GCS.levelEventIcons != null)
             {
@@ -790,7 +803,18 @@ namespace ADOFAIEditorExtension
             }
             if (sprite == null)
                 sprite = Resources.Load<Sprite>("LevelEditor/LevelEvents/" + LevelEventType.AddDecoration);
-            return sprite;
+            if (sprite == null)
+                return null;
+            try
+            {
+                tabIcon = TabIcon.Build(sprite);
+            }
+            catch (Exception e)
+            {
+                Logger?.Log("标签页图标生成失败，改用原版图标: " + e);
+                tabIcon = sprite;
+            }
+            return tabIcon;
         }
     }
 }
