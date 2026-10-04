@@ -116,6 +116,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
         private static string resolvedExpandedMark = ExpandedMark;
         private static string resolvedCollapsedMark = CollapsedMark;
         private static TMP_FontAsset resolvedMarkFont;
+        private static bool arrowMarksUnconfirmed;          // 上次一个码位都没核实到 ⇒ 下次再试（别把一次失败永久缓存）
+        private static bool arrowMarkErrorLogged;           // 自检抛异常只记一次
 
         private const float ArrowWidth = 22f;
 
@@ -156,6 +158,8 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             cachedCanvas = null;
             iconsCached = false;
             resolvedMarkFont = null;
+            arrowMarksUnconfirmed = false;
+            arrowMarkErrorLogged = false;
             resolvedExpandedMark = ExpandedMark;
             resolvedCollapsedMark = CollapsedMark;
             eyeOpenSprite = eyeClosedSprite = lockOpenSprite = lockClosedSprite = null;
@@ -1046,28 +1050,55 @@ namespace ADOFAIEditorExtension.Features.DecoGrouping
             return text;
         }
 
-        /// <summary>同一字体只自检一次（每次建行可能涉及几十个组头）。</summary>
+        /// <summary>同一字体只自检一次（每次建行可能涉及几十个组头）。
+        /// 上次**一个码位都没核实到**时不锁死结果：下次建行再自检一次（动态图集按需补字，见 <see cref="PickArrowMark"/>）。</summary>
         private static void ResolveArrowMarks(TMP_FontAsset font)
         {
-            if (font == null || ReferenceEquals(font, resolvedMarkFont))
+            if (font == null)
+                return;
+            if (ReferenceEquals(font, resolvedMarkFont) && !arrowMarksUnconfirmed)
                 return;
             resolvedMarkFont = font;
-            resolvedExpandedMark = PickArrowMark(font, PreferredExpandedMark, ExpandedMark);
-            resolvedCollapsedMark = PickArrowMark(font, PreferredCollapsedMark, CollapsedMark);
+            bool expandedConfirmed;
+            bool collapsedConfirmed;
+            resolvedExpandedMark = PickArrowMark(font, PreferredExpandedMark, ExpandedMark, out expandedConfirmed);
+            resolvedCollapsedMark = PickArrowMark(font, PreferredCollapsedMark, CollapsedMark, out collapsedConfirmed);
+            arrowMarksUnconfirmed = !expandedConfirmed || !collapsedConfirmed;
         }
 
-        /// <summary>字体里有首选码位就用它，否则回退（以后字体再变，最多退化观感，不会出方框）。</summary>
-        private static string PickArrowMark(TMP_FontAsset font, string preferred, string fallback)
+        /// <summary>字体里有首选码位就用它，没有就核实回退码位（▼/▶）；两个都没有才退回回退码位常量
+        /// （字体再变最多退化观感，不会崩）。
+        ///
+        /// v2.9.8 的 <c>TMP_FontAsset.HasCharacter</c> 是**三参**：<c>(char, bool searchFallbacks, bool tryAddCharacter)</c>
+        /// —— v2 反编译 <c>Unity.TextMeshPro.decompiled.cs:11362</c>，第三参的实现见 :11376
+        /// （<c>tryAddCharacter &amp;&amp; m_AtlasPopulationMode == Dynamic &amp;&amp; TryAddCharacterInternal(...)</c>）。
+        /// 先前传的 false 等于"只认已经画进图集的字"：动态字体资产里"源字体有、图集里还没画过"的码位
+        /// 一律判缺字（v3 <c>DecoGroupRenderer.cs:1074</c> 传的是 true）。传 true 后由 TMP 按需补进图集。
+        /// <paramref name="confirmed"/> = 真的核实到某个码位存在（首选或回退）；false ⇒ 调用方下次重试。</summary>
+        private static string PickArrowMark(TMP_FontAsset font, string preferred, string fallback, out bool confirmed)
         {
+            confirmed = false;
             try
             {
-                // 这个 TMP 版本的签名：HasCharacter(char character, bool includeFallbacks, bool searchActiveCharacterTableOnly)
-                if (font.HasCharacter(preferred[0], true, false))
+                if (font.HasCharacter(preferred[0], true, true))
+                {
+                    confirmed = true;
                     return preferred;
+                }
+                // 回退码位也要核实：字体里没有的码位写进文本会被 TMP 画成方框
+                if (font.HasCharacter(fallback[0], true, true))
+                {
+                    confirmed = true;
+                    return fallback;
+                }
             }
             catch (Exception e)
             {
-                Main.Logger?.Log("检测箭头字形失败，按回退字形处理: " + e.Message);
+                if (!arrowMarkErrorLogged)
+                {
+                    arrowMarkErrorLogged = true;
+                    Main.Logger?.Log("检测箭头字形失败，按回退字形处理（只记一次）: " + e.Message);
+                }
             }
             return fallback;
         }

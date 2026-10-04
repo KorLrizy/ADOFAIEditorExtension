@@ -88,19 +88,16 @@ namespace ADOFAIEditorExtension.Features.PagerList
         private static readonly List<Bind> cachedBinds = new List<Bind>();
         private static bool cacheValid;
 
-        // "PACL2 的复制提示会不会响"的判定缓存（每次打开弹窗重判，见 InvalidateCache）
-        private static bool pacl2Checked;
-        private static bool pacl2ToastsCopy;
+        /// <summary>键类型不是 `EditorKeybind` 时的反射兜底缓存（见 <see cref="IsPressed"/>）。</summary>
+        private static readonly Dictionary<Type, MethodInfo> isPressedMethods = new Dictionary<Type, MethodInfo>();
 
         /// <summary>
-        /// 弹窗每次打开时刷新缓存：键位表（用户可能改过键位）与"PACL2 提示是否生效"
-        /// （用户可能在两次打开之间开关过 PACL2）。
+        /// 弹窗每次打开时刷新缓存：键位表是原版对象，用户可能在两次打开之间改过键位。
         /// </summary>
         internal static void InvalidateCache()
         {
             cacheValid = false;
             cachedBinds.Clear();
-            pacl2Checked = false;
         }
 
         /// <summary>
@@ -229,10 +226,15 @@ namespace ADOFAIEditorExtension.Features.PagerList
             if (intent == PagerClipboardIntent.PasteEvents)
             {
                 // 粘贴一律交回原版（它自己会按 clipboard / clipboardContent 的语义处理，
-                // 包括"不覆盖"、多处 FloorData 按砖顺延等）
+                // 包括"不覆盖"、多处 FloorData 按砖顺延等）。
+                // §47 落点：原版 `PasteEvents` 是 `events.Add(CopyEvent(ev, id))` —— 新事件按**对象**追加到
+                // 数组末尾，即贴到那块砖现有事件的最后，与类型、与"当前停在哪一行"都无关。
+                // 这里刻意不去改写落点：自己插一次 = 在原版粘贴作用域之外再动一次 levelData.levelEvents，
+                // 要多压一个撤销点（两步撤销），换来的只是行序不同 ⇒ 不值。
                 int clipboardCount = DescribeClipboard(editor, out int clipboardEvents);
                 int targetFloor = ResolveFloorID(editor, PagerListController.SelectedPopupEvents());
                 int before = CountFloorEvents(editor, targetFloor);
+                HashSet<LevelEvent> beforeObjects = SnapshotEventObjects(editor);   // §47 事后按引用认"贴上去的是哪几个"
                 // 原版粘贴收尾会 SelectFloor + ShowTabsForFloor + ShowPanel，那会命中"面板切换就关窗"
                 // 的补丁 ⇒ 先声明这是我们自己触发的，弹窗才不会被顺手关掉（之后 ReloadRows 重建列表）
                 PagerListController.SuppressAutoClose();
@@ -249,6 +251,12 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 // 就会把刚弹的"已粘贴 N"顶掉（左上角只有一条位置，§39 M1）。
                 PagerListController.SuppressExitToastThisFrame();
                 PagerListController.AfterPopupClipboardChange(true, false);
+                // §47 混排剪贴板：原版的 selectAfterward 只把面板切到剪贴板里**第一个**事件的类型上，
+                // 其余类型的事件用户既看不到也选不到 ⇒ 这里改成"选中这次贴上去的全部新事件"，
+                // 并按它们的类型决定停在哪一页（见 SelectEventsAfterPaste）
+                List<LevelEvent> pasted = NewEventObjects(editor, beforeObjects, targetFloor);
+                if (pasted.Count > 0)
+                    PagerListController.SelectEventsAfterPaste(pasted);
                 return;
             }
 
@@ -265,19 +273,23 @@ namespace ADOFAIEditorExtension.Features.PagerList
                 // 单选：原版的"选中的事件"就是面板里那个事件，与我们列表当前行一致 ⇒ 直接复用原版 action
                 // （剪切的收尾会 ShowTabsForFloor/ShowPanel ⇒ 先压住"面板切换就关窗"）
                 // 提示里的个数与原版实际处理的一致：全部同类 = 当前砖上该类型的事件数（原版 CopyOfFloor 同口径）
+                // §47 这条只在**选中 1 个**时走：那时"我们的当前行"与面板 selectedEvent 必然同型同事件，
+                // 复用才逐字等价；多选（哪怕全是同一类型）都走下面模组自己的路，剪贴板/删除/撤销点都在我们手里。
                 int affected = allSameType ? CollectSameTypeEvents(editor, selected).Count : 1;
                 PagerListController.SuppressAutoClose();
                 Run(editor, action);
                 if (cut)
                     PagerListController.AfterPopupClipboardChange(false, false);
-                // 复制走的就是原版 scnEditor.CopyFloor ⇒ 装了（且启用）PACL2 时它已经弹过
-                // "已复制选中方块！"；剪切原版不弹（PACL2 也没挂 CutFloor）⇒ 由我们补上。见 §26.3 策略表。
-                if (ShouldNotify(cut, false, Pacl2ToastsCopy()))
-                    Notify(cut ? "aee.notify.cut" : "aee.notify.copied", Mathf.Max(affected, 1));
+                // 提示由我们自己弹：v2 这边没有 PACL2 抢 `CopyFloor` 的"已复制选中方块！"，
+                // 原版复制/剪切都不弹提示。
+                Notify(cut ? "aee.notify.cut" : "aee.notify.copied", Mathf.Max(affected, 1));
                 return;
             }
 
-            // 多选：剪贴板是我们自己拼的 / 事件是我们自己删的，PACL2 完全感知不到 ⇒ 提示始终由我们弹
+            // 多选：剪贴板是我们自己拼的、事件是我们自己删的 ⇒ 提示同样由我们弹
+            // §47 `selected` 就是**显示列表顺序**下的全部选中事件（SelectedPopupEvents），可以横跨多个类型：
+            // 复制/剪切都对**全部**选中行生效（一条 FloorData 里混几个类型都行，原版 PasteEvents 逐条 CopyEvent，
+            // 不看类型），删除走 <see cref="RemoveEvents"/>（一个撤销点还原全部）。
             List<LevelEvent> toCopy = allSameType ? CollectSameTypeEvents(editor, selected) : selected;
             if (toCopy.Count == 0)
                 return;
@@ -303,26 +315,12 @@ namespace ADOFAIEditorExtension.Features.PagerList
             return intent == PagerClipboardIntent.CutEvents || intent == PagerClipboardIntent.CutAllSameType;
         }
 
-        /// <summary>
-        /// 这次操作要不要**由我们**弹提示（纯策略，离线 harness 直接断言；文档 §26.3 的策略表就是它）：
-        ///  · 剪切（单选走原版 `CutFloor`、多选走我们自己的 RemoveEvents）：原版与 PACL2 都没提示 ⇒ 我们弹；
-        ///  · 多选复制：剪贴板是我们自己拼的，PACL2 感知不到 ⇒ 我们弹；
-        ///  · 单选复制（走原版 `CopyFloor`）：装了**且启用**的 PACL2 已经在 `CopyFloor` 前缀里弹过 ⇒ 不重复。
-        /// </summary>
-        internal static bool ShouldNotify(bool cut, bool multiSelect, bool pacl2Toasts)
-        {
-            if (cut || multiSelect)
-                return true;
-            return !pacl2Toasts;
-        }
-
         // ---------------------------------------------------------------- 浮出提示（§26.3）
 
         /// <summary>
         /// 浮出提示：**复用游戏自己的 `scnEditor.ShowNotification(text)`**
-        /// （签名 `ShowNotification(string, Color? = null, float = 1.25f)`，原版公开 API）。
-        /// PACL2 的"已复制选中方块！"用的就是它（IL 核过：`ldstr "FixChartLoad.CopyFloorSelected"` →
-        /// `scnEditor::ShowNotification`）⇒ 样式、位置、时长天然一致，而且**没有 PACL2 时照样能用**。
+        /// （签名 `ShowNotification(string, Color? = null, float = 1.25f)`，原版公开 API）
+        /// ⇒ 样式、位置、时长都与原版自己的提示一致。
         /// </summary>
         private static void Notify(string localizationKey, int count)
         {
@@ -360,47 +358,6 @@ namespace ADOFAIEditorExtension.Features.PagerList
             {
                 return template;
             }
-        }
-
-        /// <summary>
-        /// "PACL2 的复制提示当前会不会响"：看 `scnEditor.CopyFloor` 上有没有**来自 PACL2 程序集**的
-        /// Harmony 补丁 —— 而不是"PACL2 装没装"。这样"装了但被禁用 / 补丁没打上"的情况也能判对
-        /// （只看 UMM 的 mod 列表做不到）。每次打开弹窗重判（`InvalidateCache`）。
-        /// </summary>
-        private static bool Pacl2ToastsCopy()
-        {
-            if (pacl2Checked)
-                return pacl2ToastsCopy;
-            pacl2Checked = true;
-            pacl2ToastsCopy = false;
-            try
-            {
-                MethodBase target = AccessTools.Method(typeof(scnEditor), "CopyFloor");
-                HarmonyLib.Patches info = target != null ? Harmony.GetPatchInfo(target) : null;
-                if (info == null)
-                    return false;
-                pacl2ToastsCopy = HasPacl2Patch(info.Prefixes)
-                    || HasPacl2Patch(info.Postfixes)
-                    || HasPacl2Patch(info.Transpilers);
-            }
-            catch (Exception e)
-            {
-                Main.Logger?.Log("检测 PACL2 复制提示失败（按未安装处理）: " + e.Message);
-            }
-            return pacl2ToastsCopy;
-        }
-
-        private static bool HasPacl2Patch(IEnumerable<Patch> patches)
-        {
-            if (patches == null)
-                return false;
-            foreach (Patch patch in patches)
-            {
-                Type declaring = patch.PatchMethod != null ? patch.PatchMethod.DeclaringType : null;
-                if (declaring != null && declaring.Assembly.GetName().Name == "PACL2")
-                    return true;
-            }
-            return false;
         }
 
         // ---------------------------------------------------------------- 与原版一致的剪贴板
@@ -597,23 +554,63 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>
-        /// "复制/剪切全部同类事件"：**当前砖上**该类型的所有事件 —— 与原版 `CopyOfFloor` 的 allSameTypeEvents
-        /// 分支同义（IL：`events.FindAll(e => e.floor == floor.seqID &amp;&amp; e.eventType == selectedEventType)`），
+        /// "复制/剪切全部同类事件"：**当前砖上**这些类型的所有事件 —— 与原版 `CopyOfFloor` 的
+        /// allSameTypeEvents 分支同义（IL：`events.FindAll(e => e.floor == floor.seqID &amp;&amp; e.eventType == selectedEventType)`），
         /// 不是整关（以前按整关收，多选剪切会把别的砖上的同类事件一起删掉）。
         /// 砖号口径与复制目标一致（<see cref="ResolveFloorID"/>）；取不到砖就返回空表。
         /// </summary>
         private static List<LevelEvent> CollectSameTypeEvents(scnEditor editor, List<LevelEvent> selected)
         {
             var result = new List<LevelEvent>();
-            if (selected == null || selected.Count == 0 || selected[0] == null)
+            if (selected == null || selected.Count == 0)
                 return result;
-            LevelEventType type = selected[0].eventType;
+            // §47 混排标签页里选中集可以横跨多个类型："同类"按**每个选中事件自己的类型**各收一批
+            //（逐型与原版 CopyOfFloor 同口径）。
+            // AllEvents 就是 levelData.levelEvents 的数组顺序 ⇒ 扫一遍天然按顺序、也不会重复收。
+            var types = new HashSet<LevelEventType>();
+            for (int i = 0; i < selected.Count; i++)
+                if (selected[i] != null)
+                    types.Add(selected[i].eventType);
+            if (types.Count == 0)
+                return result;
             int floorID = ResolveFloorID(editor, selected);
             if (floorID < 0)
                 return result;
             foreach (LevelEvent ev in AllEvents(editor))
-                if (ev != null && ev.floor == floorID && ev.eventType == type)
+                if (ev != null && ev.floor == floorID && types.Contains(ev.eventType))
                     result.Add(ev);
+            return result;
+        }
+
+        /// <summary>
+        /// §47 把整张事件表按**引用**拍一份快照（<c>LevelEvent</c> 没重写 Equals ⇒ HashSet 就是引用判等）。
+        /// 粘贴会 `CopyEvent` 造新对象，事后取差集就是"这次真正贴上去的事件"，跨类型也能一次认全。
+        /// </summary>
+        private static HashSet<LevelEvent> SnapshotEventObjects(scnEditor editor)
+        {
+            var set = new HashSet<LevelEvent>();
+            if (editor == null)
+                return set;
+            foreach (LevelEvent ev in AllEvents(editor))
+                if (ev != null)
+                    set.Add(ev);
+            return set;
+        }
+
+        /// <summary>§47 快照之后新增的事件对象（数组顺序；认得目标砖就只收那块砖上的）。</summary>
+        private static List<LevelEvent> NewEventObjects(scnEditor editor, HashSet<LevelEvent> before, int floorID)
+        {
+            var result = new List<LevelEvent>();
+            if (editor == null || before == null)
+                return result;
+            foreach (LevelEvent ev in AllEvents(editor))
+            {
+                if (ev == null || before.Contains(ev))
+                    continue;
+                if (floorID >= 0 && ev.floor != floorID)
+                    continue;
+                result.Add(ev);
+            }
             return result;
         }
 
@@ -647,14 +644,26 @@ namespace ADOFAIEditorExtension.Features.PagerList
             }
         }
 
+        /// <summary>
+        /// 键位是否这一帧按下。弹窗开着时每帧对每条缓存键位都要调一次 ⇒ 不能每次 `GetMethod` + `Invoke`：
+        /// r265 的键就是公开结构体 `ADOFAI.Editor.EditorKeybind`（反射核过：`public struct`，`bool IsPressed()`），
+        /// 直接拆箱调用；万一类型对不上（别的版本/模组换了键类型）才退回反射，且 MethodInfo 按类型缓存。
+        /// </summary>
         private static bool IsPressed(object keybind)
         {
             if (keybind == null)
                 return false;
             try
             {
-                return keybind.GetType().GetMethod("IsPressed", Type.EmptyTypes) is MethodInfo m
-                    && (bool)m.Invoke(keybind, null);
+                if (keybind is ADOFAI.Editor.EditorKeybind bind)
+                    return bind.IsPressed();
+                Type type = keybind.GetType();
+                if (!isPressedMethods.TryGetValue(type, out MethodInfo m))
+                {
+                    m = type.GetMethod("IsPressed", Type.EmptyTypes);
+                    isPressedMethods[type] = m;
+                }
+                return m != null && m.Invoke(keybind, null) is bool pressed && pressed;
             }
             catch
             {
@@ -685,11 +694,9 @@ namespace ADOFAIEditorExtension.Features.PagerList
     /// 且它两条分支都固定 `overwrite: false`（IL：只有 `ldarg overwrite; brfalse` 跳过 RemoveAll）
     /// ⇒ 增量就是这次真正贴上去的事件数。
     ///
-    /// 手法（与 PACL2 给 `CopyFloor` 挂提示同款）：Prefix 记下**整关**事件总数，Postfix 再数一次，
+    /// 手法：Prefix 记下**整关**事件总数，Postfix 再数一次，
     /// 差值 `> 0` 才弹（剪贴板为空 / 选中为空 / 被原版的 solo 规则跳过 ⇒ 不弹）。
     /// 用整关而不是"目标砖"的增量：一次粘贴可能铺到多块砖上（见 <see cref="PagerClipboard.CountAllEvents"/>，§39 M6）。
-    /// PACL2 没有给粘贴挂提示（IL 核过：它的 ShowNotification 只在 CopyFloor / MultiCopyFloors /
-    /// DeleteMultiSelection 等处），因此两种环境下都不会重复。
     /// </summary>
     [HarmonyPatch(typeof(ADOFAI.Editor.Actions.PasteEventsEditorAction), "Execute")]
     internal static class PasteEventsNotifyPatch

@@ -105,9 +105,12 @@
     <Compile Include="Features\DecoGrouping\DecoGroupDrag.cs" />
     <Compile Include="Features\DecoGrouping\DecoGroupingPatches.cs" />
     <Compile Include="Features\DecoGrouping\DecoGroupModeButton.cs" />
+    <Compile Include="Features\Metadata\LevelMetadataStore.cs" />
     <Compile Include="Features\Notes\EventNote.cs" />
     <Compile Include="Features\PagerList\PagerClipboard.cs" />
     <Compile Include="Features\PagerList\PagerListController.cs" />
+    <Compile Include="Features\PagerList\PagerTabStrip.cs" />
+    <Compile Include="Features\PagerList\PagerEntryButton.cs" />
     <Compile Include="Features\PagerList\PagerListPatches.cs" />
     <Compile Include="Features\PagerList\PagerWindowGeometry.cs" />
     <Compile Include="Features\PagerList\PagerNativeResizeFeedback.cs" />
@@ -118,6 +121,7 @@
     <Compile Include="Patches\EditorIntegrationPatches.cs" />
     <Compile Include="Patches\LevelDecodeRegistrationPatch.cs" />
     <Compile Include="Patches\LevelEncodePatch.cs" />
+    <Compile Include="Patches\LevelMetadataPatches.cs" />
     <Compile Include="Patches\PropertyPanelPatches.cs" />
     <Compile Include="PrefabProperties.cs" />
     <Compile Include="PropertyCollection\Property.cs" />
@@ -132,9 +136,11 @@
     <Compile Include="Utils\LevelEventEX.cs" />
     <Compile Include="Utils\Popup.cs" />
     <Compile Include="Utils\Reflections.cs" />
+    <Compile Include="Utils\TabIcon.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
+    <EmbeddedResource Include="Resources\AeeTabIcon.png" LogicalName="AeeTabIcon.png" />
     <None Include="Info.json" />
     <None Include="Localizations.json" />
   </ItemGroup>

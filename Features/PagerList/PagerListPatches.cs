@@ -137,14 +137,49 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>
+        /// §47 原生事件面板刚为选中的那块砖重排完标签页 —— 头部那两个原生按钮（删除/停用）的位置到这时
+        /// 才定下来，「全部事件」入口按钮要重新对齐、门槛也要重数（这是它最正经的一次刷新）。
+        ///
+        /// 只认**事件面板**（<c>scnEditor.levelEventsPanel</c>）：别的面板（关卡设置等）也共用这个方法。
+        /// 另外：我们的按钮**绝不能挂在 <c>tabs</c> 底下** —— 原版在这个方法结尾会按名字逐个
+        /// <c>SetActive</c> 那一层的每个子对象，挂进去就会被当成标签页关掉。
+        /// </summary>
+        [HarmonyPatch(typeof(InspectorPanel), "ShowTabsForFloor")]
+        internal static class FloorTabsRelaidOutPatch
+        {
+            internal static void Postfix(InspectorPanel __instance)
+            {
+                // 后置跑在原版的标签页排版之后：这里再抛异常就会把原版整次刷新带崩，全部吞掉
+                try
+                {
+                    scnEditor editor = scnEditor.instance;
+                    if (editor == null || !ReferenceEquals(__instance, editor.levelEventsPanel))
+                        return;
+                    PagerListController.OnFloorPanelRelaidOut();
+                }
+                catch (Exception e)
+                {
+                    Main.Logger?.Log("分页器入口按钮跟随标签页重排刷新失败（已吞掉）: " + e);
+                }
+            }
+        }
+
+        /// <summary>
         /// 面板切换到**别的类型/别的标签页**时关掉列表；同一类型的刷新（我们自己的选事件/多选刷新、
         /// 原版重渲染）不关 —— 否则弹窗内点一下就把自己关掉了（§26.2）。
+        ///
+        /// 只认**事件面板**（`scnEditor.levelEventsPanel`）：`ShowPanel` 是所有 InspectorPanel 共用的，
+        /// 关卡设置面板（`settingsPanel`）切个标签页也会进来 —— 不过滤的话，在设置里切 tab
+        /// 就会被当成"切到别的事件类型"而退出多选 / 关窗。
         /// </summary>
         [HarmonyPatch(typeof(InspectorPanel), "ShowPanel")]
         internal static class ShowPanelClosePatch
         {
-            internal static void Postfix(LevelEventType eventType)
+            internal static void Postfix(InspectorPanel __instance, LevelEventType eventType)
             {
+                scnEditor editor = scnEditor.instance;
+                if (editor == null || !ReferenceEquals(__instance, editor.levelEventsPanel))
+                    return;
                 PagerListController.CloseIfOpenOnOtherPanel(eventType);
                 // 批量态活着时，原版这次 ShowPanel 可能把面板切成了单事件 ⇒ 挂回批量视图（§34.2）
                 PagerListController.EnsureBatchPanelBound();
@@ -152,7 +187,8 @@ namespace ADOFAIEditorExtension.Features.PagerList
         }
 
         /// <summary>
-        /// 弹窗打开时接管"复制/剪切/粘贴事件"这几条快捷键（§24）。
+        /// 弹窗打开时接管"复制/剪切/粘贴事件"这几条快捷键（§24），外加"把选中事件移到最上/最下"
+        /// （`ctrl-shift-↑/↓`，见 <see cref="PagerListController.HandleMoveToEdgeKeybind"/>）。
         ///
         /// 原版 `HandleKeyboardActions` 的第一句是 `if (showingPopup) { 只处理 Esc; return; }`，
         /// 而本弹窗就是 `scnEditor.ShowPopup` 打开的 ⇒ 弹窗期间原版**所有**快捷键都不执行。
@@ -186,6 +222,10 @@ namespace ADOFAIEditorExtension.Features.PagerList
                     bool consumed = PagerListController.HandlePopupEscape();
                     if (!consumed)
                         consumed = PagerClipboard.HandleKeybinds();
+                    // Ctrl+Shift+↑/↓（把选中事件移到最上/最下）：原版的 ↑/↓ 只挂了 None 与 Shift 两组，
+                    // 没有这一组；弹窗期间原版快捷键全部停摆，所以也不会抢走任何动作
+                    if (!consumed)
+                        consumed = PagerListController.HandleMoveToEdgeKeybind();
                     return !consumed;
                 }
                 catch (Exception e)
