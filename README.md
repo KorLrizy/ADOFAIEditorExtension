@@ -1,3 +1,5 @@
+[English](README_EN.md) | 简体中文
+
 # ADOFAI Editor Extension
 
 一个面向 *A Dance of Fire and Ice* 官方关卡编辑器的 Unity Mod Manager 模组：**装饰栏分组** 与 **事件分页器直选弹窗**。
@@ -26,6 +28,8 @@
   事件键名 `aeeGroupEvent`），默认不写入，见[注意事项](#注意事项与关卡兼容性)。
 
 ### 事件分页器直选弹窗
+<img width="2560" height="1487" alt="点击分页器斜杠打开事件分组窗口" src="images/pager-popup.png" />
+点击斜杠打开事件分组窗口
 
 同类型、同位置的事件在原版里堆叠成 `◀ 1/3 ▶` 一个分页器，只能一格一格翻。**直接点击这段分页器文本**，
 会弹出一个可滚动的直选列表（原版前后箭头翻页不受影响）。
